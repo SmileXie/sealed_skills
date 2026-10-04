@@ -43,8 +43,8 @@ export function writeContainer(input: {
   for (const [i, chunk] of chunks.entries()) {
     const meta = manifest.entries[i]
     if (meta.id !== chunk.id) throw new PackFormatError('TABLE_MISMATCH', 'chunk id mismatch at index ' + i)
-    if (meta.size !== chunk.ct.length) throw new PackFormatError('TABLE_MISMATCH', 'chunk size mismatch at index ' + i)
     if (meta.size > MAX_ENTRY_BYTES) throw new PackFormatError('TOO_LARGE', 'entry ' + meta.id + ' exceeds 32 MiB cap')
+    if (meta.size !== chunk.ct.length) throw new PackFormatError('TABLE_MISMATCH', 'chunk size mismatch at index ' + i)
     if (chunk.nonce.length !== NONCE_BYTES) throw new PackFormatError('TABLE_MISMATCH', 'bad nonce length for ' + meta.id)
   }
 
@@ -98,11 +98,19 @@ export function readContainer(buf: Buffer): {
 
   let manifest: PackManifest
   try {
-    manifest = JSON.parse(manifestBytes.toString('utf8')) as PackManifest
-  } catch {
+    const parsed: unknown = JSON.parse(manifestBytes.toString('utf8'))
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new PackFormatError('BAD_MANIFEST', 'manifest has an unexpected shape')
+    }
+    manifest = parsed as PackManifest
+  } catch (err) {
+    if (err instanceof PackFormatError) throw err
     throw new PackFormatError('BAD_MANIFEST', 'manifest is not valid JSON')
   }
-  if (manifest.entry_count !== count || !Array.isArray(manifest.entries) || manifest.entries.length !== count) {
+  if (typeof manifest.entry_count !== 'number' || !Array.isArray(manifest.entries)) {
+    throw new PackFormatError('BAD_MANIFEST', 'manifest has an unexpected shape')
+  }
+  if (manifest.entry_count !== count || manifest.entries.length !== count) {
     throw new PackFormatError('TABLE_MISMATCH', 'manifest entry_count disagrees with the chunk table')
   }
 
@@ -115,6 +123,9 @@ export function readContainer(buf: Buffer): {
     need(12)
     const offset = Number(buf.readBigUInt64BE(p)); p += 8
     const ctLen = buf.readUInt32BE(p); p += 4
+    const declaredSize = manifest.entries[i].size
+    if (declaredSize > MAX_ENTRY_BYTES) throw new PackFormatError('TOO_LARGE', 'entry ' + id + ' exceeds 32 MiB cap')
+    if (declaredSize !== ctLen) throw new PackFormatError('TABLE_MISMATCH', 'chunk size mismatch at index ' + i)
     if (ctLen > MAX_ENTRY_BYTES) throw new PackFormatError('TOO_LARGE', 'entry ' + id + ' exceeds 32 MiB cap')
     if (offset + NONCE_BYTES + ctLen > buf.length) throw new PackFormatError('TRUNCATED', 'chunk ' + id + ' runs past end of file')
     chunks.push({ id, offset, nonce: buf.subarray(offset, offset + NONCE_BYTES), ct: buf.subarray(offset + NONCE_BYTES, offset + NONCE_BYTES + ctLen) })

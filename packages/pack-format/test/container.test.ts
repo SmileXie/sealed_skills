@@ -24,6 +24,7 @@ describe('container', () => {
     expect(parsed.manifest).toEqual(manifest)
     expect(parsed.signature.equals(signature)).toBe(true)
     expect(parsed.chunks[0].ct.length).toBe(21)
+    expect(parsed.chunks[0].ct.equals(Buffer.alloc(21, 9))).toBe(true)
     expect(file.subarray(parsed.chunks[0].offset, parsed.chunks[0].offset + 12).equals(Buffer.alloc(12, 3))).toBe(true)
   })
 
@@ -40,9 +41,25 @@ describe('container', () => {
     expect(() => readContainer(file)).toThrowError(expect.objectContaining({ code: 'BAD_MAGIC' }))
   })
 
+  it('rejects an unsupported format version', () => {
+    const { file } = buildFixture()
+    const patched = Buffer.from(file)
+    patched[6] = 2
+    expect(() => readContainer(patched)).toThrowError(expect.objectContaining({ code: 'BAD_VERSION' }))
+  })
+
   it('rejects a truncated file', () => {
     const { file } = buildFixture()
     expect(() => readContainer(file.subarray(0, file.length - 4))).toThrowError(expect.objectContaining({ code: 'TRUNCATED' }))
+  })
+
+  it('rejects a manifest that parses to a non-object', () => {
+    const { file } = buildFixture()
+    const manifestLen = file.readUInt32BE(8)
+    const patched = Buffer.from(file)
+    patched.write('null', 12, 'utf8')
+    patched.fill(0x20, 12 + 4, 12 + manifestLen)
+    expect(() => readContainer(patched)).toThrowError(expect.objectContaining({ code: 'BAD_MANIFEST' }))
   })
 
   it('rejects an entry larger than the 32 MiB cap', () => {
@@ -52,6 +69,18 @@ describe('container', () => {
     }
     expect(() => writeContainer({ manifest, chunks: [{ id: 'data:big', nonce: Buffer.alloc(12), ct: Buffer.alloc(MAX_ENTRY_BYTES + 1) }], signature: Buffer.alloc(64) }))
       .toThrowError(expect.objectContaining({ code: 'TOO_LARGE' }))
+  })
+
+  it('round-trips an entry of exactly the 32 MiB cap', () => {
+    const manifest: PackManifest = {
+      pack_id: 'com.example.p', version: '1.0.0', label: 'p', entry_count: 1,
+      entries: [{ id: 'data:cap', type: 'data', size: MAX_ENTRY_BYTES, trial: false }],
+    }
+    const ct = Buffer.alloc(MAX_ENTRY_BYTES, 7)
+    const file = writeContainer({ manifest, chunks: [{ id: 'data:cap', nonce: Buffer.alloc(12, 1), ct }], signature: Buffer.alloc(64) })
+    const parsed = readContainer(file)
+    expect(parsed.chunks[0].ct.length).toBe(MAX_ENTRY_BYTES)
+    expect(parsed.chunks[0].ct.equals(ct)).toBe(true)
   })
 
   it('rejects a chunk table that disagrees with the manifest', () => {
@@ -64,5 +93,17 @@ describe('container', () => {
     const { manifest, signature } = buildFixture()
     expect(() => writeContainer({ manifest, chunks: [{ id: 'meta', nonce: Buffer.alloc(12), ct: Buffer.alloc(20) }], signature }))
       .toThrowError(expect.objectContaining({ code: 'TABLE_MISMATCH' }))
+  })
+
+  it('rejects a table ctLen that disagrees with the signed manifest size', () => {
+    const { file } = buildFixture()
+    const manifestLen = file.readUInt32BE(8)
+    const sigLen = file.readUInt32BE(12 + manifestLen)
+    const tableStart = 12 + manifestLen + 4 + sigLen
+    const idLen = file.readUInt32BE(tableStart + 4)
+    const ctLenField = tableStart + 4 + 4 + idLen + 8
+    const patched = Buffer.from(file)
+    patched.writeUInt32BE(patched.readUInt32BE(ctLenField) - 1, ctLenField)
+    expect(() => readContainer(patched)).toThrowError(expect.objectContaining({ code: 'TABLE_MISMATCH' }))
   })
 })
