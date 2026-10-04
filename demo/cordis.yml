@@ -1,0 +1,3 @@
+- insert:
+    - id: sealed
+      name: '/abs/path/to/sealed_skills/packages/dsh-sealed-skills/src/plugin.ts'
