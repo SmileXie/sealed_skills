@@ -1,5 +1,5 @@
 import { createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +13,8 @@ import { createApp, loadServerKeys, openStore, serverLicensePublicB64 } from '@s
 import { SealedCore } from '../src/core.js'
 import { LicenseClient } from '../src/license-client.js'
 import { FileKeystore } from '../src/keystore.js'
+import { apply, type SkillsContext } from '../src/plugin.js'
+import type { DshSkillCandidate, DshSkillProvider, DshSkillProviderControl } from '../src/provider.js'
 
 const packId = 'com.example.translate'
 const version = '1.0.0'
@@ -23,7 +25,7 @@ const author = generateKeyPairSync('ed25519')
 const authorPub = (author.publicKey.export({ format: 'jwk' }) as { x: string }).x
 
 // A minimal sealed pack whose body entry is withheld from the trial set.
-function buildPack(): { file: Buffer; manifest: PackManifest } {
+function buildPack(id = packId, ver = version): { file: Buffer; manifest: PackManifest } {
   const entries: { id: string; type: PackEntryMeta['type']; body: string }[] = [
     {
       id: 'meta',
@@ -39,10 +41,10 @@ function buildPack(): { file: Buffer; manifest: PackManifest } {
     },
     { id: 'skill:translate:body', type: 'text', body: '把用户输入翻译成英文。\n' },
   ]
-  const manifest: PackManifest = { pack_id: packId, version, label: '翻译', entry_count: entries.length, entries: [] }
+  const manifest: PackManifest = { pack_id: id, version: ver, label: '翻译', entry_count: entries.length, entries: [] }
   const chunks = entries.map((entry) => {
-    const key = deriveEntryKey(master, packId, version, entry.id)
-    const sealed = sealEntry(key, entryAad(packId, version, entry.id), Buffer.from(entry.body, 'utf8'))
+    const key = deriveEntryKey(master, id, ver, entry.id)
+    const sealed = sealEntry(key, entryAad(id, ver, entry.id), Buffer.from(entry.body, 'utf8'))
     manifest.entries.push({ id: entry.id, type: entry.type, size: sealed.ct.length, trial: entry.id !== 'skill:translate:body' })
     return { id: entry.id, nonce: sealed.nonce, ct: sealed.ct }
   })
@@ -103,6 +105,19 @@ function trustedKeys(licensePubB64: string) {
   return [createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: licensePubB64 }, format: 'jwk' })]
 }
 
+function fakeContext(): { ctx: SkillsContext; provider: () => DshSkillProvider } {
+  let registered: DshSkillProvider | undefined
+  const ctx: SkillsContext = {
+    skills: {
+      registerProvider(create: (control: DshSkillProviderControl) => DshSkillProvider) {
+        registered = create({ signal: new AbortController().signal, invalidate: () => {} })
+        return () => {}
+      },
+    },
+  }
+  return { ctx, provider: () => registered! }
+}
+
 describe('M2 licensing end to end', () => {
   it('publishes, activates, decrypts, renews and then fails to renew after a revoke', async () => {
     const { url, store, keys, licensePublic } = await startServer()
@@ -153,5 +168,99 @@ describe('M2 licensing end to end', () => {
 
     const devicePub = (await new FileKeystore({ dir: home }).loadDevicePublicKey())!.toString('base64url')
     expect(store.getTrial(devicePub, packId, version)).toBeDefined()
+  })
+
+  it('activates and decrypts through the real plugin on a fresh machine (no pre-created device key)', async () => {
+    const { url, store, keys, licensePublic } = await startServer()
+    const { file: pack, manifest } = buildPack()
+    await publish(url, manifest)
+    store.putPurchase({ token: 'purchase-fresh', sub: 'cust', packId, version, plan: 'pro', seats: 1 })
+
+    const home = mkdtempSync(join(tmpdir(), 'sealed-home-'))
+    const packPath = join(home, 'translate.sealedpack')
+    writeFileSync(packPath, pack)
+    // 全新机器：没有预置设备密钥，插件必须自行生成（规范 §7.2 步骤 1）。
+    expect(existsSync(join(home, 'device.json'))).toBe(false)
+
+    const { ctx, provider } = fakeContext()
+    apply(ctx, {
+      mounts: [{ packPath, purchaseToken: 'purchase-fresh' }],
+      trustedLicenseKeysB64: [licensePublic],
+      serverUrl: url,
+      serverProofPubB64: keys.proofPublicB64,
+      keystoreDir: home,
+    })
+
+    const candidates = (await provider().list({})) as DshSkillCandidate[]
+    expect(candidates.map((candidate) => candidate.name)).toEqual(['translate'])
+    const definition = await provider().get(candidates[0], {})
+    expect(definition?.content).toBe('把用户输入翻译成英文。\n')
+    expect(existsSync(join(home, 'device.json'))).toBe(true)
+  })
+
+  it('keeps a healthy mount available when a sibling mount is denied', async () => {
+    const { url, store, keys, licensePublic } = await startServer()
+    const healthy = buildPack()
+    await publish(url, healthy.manifest)
+    store.putPurchase({ token: 'purchase-mix', sub: 'cust', packId, version, plan: 'pro', seats: 1 })
+
+    const denied = buildPack('com.example.denied', '1.0.0')
+    const home = mkdtempSync(join(tmpdir(), 'sealed-home-'))
+    const healthyPath = join(home, 'healthy.sealedpack')
+    const deniedPath = join(home, 'denied.sealedpack')
+    writeFileSync(healthyPath, healthy.file)
+    writeFileSync(deniedPath, denied.file)
+
+    const { ctx, provider } = fakeContext()
+    apply(ctx, {
+      mounts: [
+        { packPath: deniedPath }, // 无 offline license / purchaseToken / trial → NO_LICENSE，被跳过
+        { packPath: healthyPath, purchaseToken: 'purchase-mix' },
+      ],
+      trustedLicenseKeysB64: [licensePublic],
+      serverUrl: url,
+      serverProofPubB64: keys.proofPublicB64,
+      keystoreDir: home,
+    })
+
+    const candidates = (await provider().list({})) as DshSkillCandidate[]
+    expect(candidates.map((candidate) => candidate.name)).toEqual(['translate'])
+    expect((await provider().get(candidates[0], {}))?.content).toBe('把用户输入翻译成英文。\n')
+  })
+
+  it('rebuilds a cached mount after the refresh interval elapses', async () => {
+    const { url, store, keys, licensePublic } = await startServer()
+    const { file: pack, manifest } = buildPack()
+    await publish(url, manifest)
+    store.putPurchase({ token: 'purchase-refresh', sub: 'cust', packId, version, plan: 'pro', seats: 1 })
+
+    const home = mkdtempSync(join(tmpdir(), 'sealed-home-'))
+    const packPath = join(home, 'translate.sealedpack')
+    writeFileSync(packPath, pack)
+
+    // 通过一个独立 client 拿到一份离线 license，再以 licensePath 挂载。
+    const issued = await newClient(url, keys.proofPublicB64, licensePublic, home)
+    const entitlement = await issued.activate(packRef, 'purchase-refresh')
+    const licensePath = join(home, 'offline.license.json')
+    writeFileSync(licensePath, entitlement.license)
+
+    const clock = { t: Date.now() }
+    const { ctx, provider } = fakeContext()
+    apply(ctx, {
+      mounts: [{ packPath, licensePath }],
+      trustedLicenseKeysB64: [licensePublic],
+      keystoreDir: home,
+      now: () => clock.t,
+    })
+
+    expect((await provider().list({}) as DshSkillCandidate[]).map((c) => c.name)).toEqual(['translate'])
+
+    // 缓存仍在：删掉离线 license 文件后，未到刷新窗口前依然可用。
+    rmSync(licensePath, { force: true })
+    expect((await provider().list({}) as DshSkillCandidate[]).map((c) => c.name)).toEqual(['translate'])
+
+    // 越过 24h 刷新窗口：本次访问丢弃缓存并重建，重新读取已删除的 licensePath 失败 → 挂载停用。
+    clock.t += 24 * 60 * 60 * 1000 + 1
+    expect(await provider().list({})).toEqual([])
   })
 })

@@ -157,7 +157,8 @@ console.log(res.status, await res.text())
   serverUrl: 'https://license.example.com',
   serverProofPubB64: '<服务器 proof 公钥 base64url>',
   trustedLicenseKeysB64: ['<服务器 license 签名公钥 base64url>'],
-  keystoreDir: '$SEALED_HOME',           // 默认 $SEALED_HOME 或 <cwd>/.sealed-home
+  // keystoreDir 省略时读取 $SEALED_HOME（再退化为 <cwd>/.sealed-home）。
+  // 注意：显式给出的值不会被展开环境变量，必须是绝对路径。
   mounts: [{ packPath: '/abs/path/translate.sealedpack', purchaseToken: '<订单 token>' }],
 }
 ```
@@ -184,6 +185,12 @@ console.log(res.status, await res.text())
 | 吊销 | 管理端点标记吊销并释放席位；客户端最迟在下次 `renew` 时收到 `403 REVOKED` 并删除缓存 |
 | 席位 | `activate` 占用，`revoke` 释放；同一设备重复激活不重复占位 |
 | 试用 | 每设备每 pack 一次；只解锁 `trial_entries`；购买后 `/v1/activate` 直接覆盖，无需重装 |
+
+> **运行时刷新契约（重要）**：插件按 24 小时的窗口**惰性刷新**已挂载的 pack——下次访问技能时，
+> 若距上次成功构建已超过 24h，就丢弃缓存并重跑 license 获取（该续期时续期，离线挂载则重新导入
+> `licensePath`）。因此：续期最迟在 24h 内发生，长时间运行的进程不会在 `exp + grace` 后静默丢失
+> 技能；但**吊销的生效延迟同样是 ≤ 24h**——服务端标记吊销后，客户端要等到下一次刷新/续期才会
+> 收到拒绝并停用技能，而不是即时中断。
 
 ## 6. 安全清单（上线前逐条确认）
 

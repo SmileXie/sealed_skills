@@ -49,6 +49,8 @@ export interface SealedSkillsConfig {
   readonly keystoreDir?: string
   /** Candidate precedence rank. Defaults to 600, the published `BUNDLED_SKILL_RANK`. */
   readonly rank?: number
+  /** Injectable clock (ms since epoch) used for cache refresh timing; defaults to `Date.now`. */
+  readonly now?: () => number
 }
 
 /** The only part of the dsh context surface this plugin depends on. */
@@ -66,9 +68,12 @@ export const inject = ['skills']
  * effect disposer so the loader can order teardown.
  *
  * Cores are built lazily on first use (online activation or offline import) and cached per
- * pack path. A mount whose pack is missing/corrupt, whose license cannot be obtained or
- * imported, or that is bound to another device is skipped (fail-closed per mount): neither
- * core construction nor `list()` rejects, and the provider reports only the healthy packs.
+ * pack path. The cache is refreshed lazily on access once every 24h, which re-runs license
+ * acquisition (renewal when due, or a fresh offline import) — so a long-running process keeps
+ * a paid license alive and observes revocation at the next refresh, not instantly. A mount
+ * whose pack is missing/corrupt, whose license cannot be obtained or imported, or that is
+ * bound to another device is skipped (fail-closed per mount): neither core construction nor
+ * `list()` rejects, and the provider reports only the healthy packs.
  */
 export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () => void {
   const mounts = config.mounts ?? []
@@ -82,13 +87,30 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () =
     keystore, homeDir, trustedLicenseKeys,
   })
 
+  const nowMs = config.now ?? Date.now
+  const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000
   const cores = new Map<string, Promise<SealedCore>>()
+  const refreshedAt = new Map<string, number>()
   const coreFor = (mount: SealedPackMount): Promise<SealedCore> => {
+    const last = refreshedAt.get(mount.packPath)
+    if (last !== undefined && nowMs() - last >= REFRESH_INTERVAL_MS) {
+      // 刷新窗口已到：丢弃缓存并在本次访问时重建，重跑 ensureLicense（续期 / 重新导入离线
+      // license）。刻意用惰性检查而非定时器，避免插件存活期间后台常驻定时器。
+      cores.delete(mount.packPath)
+      refreshedAt.delete(mount.packPath)
+    }
     let pending = cores.get(mount.packPath)
     if (!pending) {
       // Cache the in-flight promise so concurrent callers share one activation, and drop it on
       // failure so a later call can retry (e.g. after the network or a license file is fixed).
-      pending = buildCore(mount).catch((error: unknown) => { cores.delete(mount.packPath); throw error })
+      pending = buildCore(mount).then((core) => {
+        refreshedAt.set(mount.packPath, nowMs())
+        return core
+      }).catch((error: unknown) => {
+        cores.delete(mount.packPath)
+        refreshedAt.delete(mount.packPath)
+        throw error
+      })
       cores.set(mount.packPath, pending)
     }
     return pending

@@ -306,7 +306,7 @@ interface DecryptBackend {
 ### 6.4 服务端
 
 - `@sealed/license-server`：HTTP 服务（§7.2 端点）、设备/席位/吊销存储（SQLite 起步）、Ed25519 签名、master key 加密静态存储、临时 X25519 封装。
-- 管理员接口需 bearer token + mTLS；审计日志记录全部签发/吊销操作。
+- 管理员接口需 bearer token；**M2 注记**：mTLS 尚未实现，管理员端点应仅在内网或网关后暴露。审计日志记录全部签发/吊销操作。
 - 遥测最小化：仅记录 license id、设备公钥哈希、时间戳、端点、pack id/version。不记录任何技能内容。
 
 ---
@@ -329,12 +329,14 @@ interface DecryptBackend {
 ### 7.2 激活
 
 ```
-1. license-client 查 OS 密钥库；无设备密钥则生成 X25519 密钥对，私钥入库
+1. license-client 查 OS 密钥库；无设备密钥则**由客户端自动生成** X25519 密钥对，私钥入库
+   （**M2 注记**：离线导入或首次挂载同样会生成，保证全新机器开箱可用）
 2. 本地无有效 license 且有购买凭据：
    POST /v1/activate { device_pub, purchase_token, pack:{id,version} }
 3. 服务端校验凭据/席位 → 为该设备逐条目封装 CK_i → Ed25519 签发 license(exp=+7d, grace_until=exp+3d)
 4. 客户端用内置服务端公钥验签，校验 exp / dev == 本机设备公钥 / grants 覆盖
-5. license 落 $DSH_HOME/sealed/licenses/<lid>.license.json
+5. license 落 `$SEALED_HOME/licenses/<lid>.license.json`（**M2 注记**：设备密钥在
+   `$SEALED_HOME/device.json`，时钟锚点在 `$SEALED_HOME/clock.json`）
 ```
 
 ### 7.3 首次调用（核心链路）
@@ -359,7 +361,11 @@ interface DecryptBackend {
 
 ```
 1. 启动时 + 每 24h：若剩余 < 阈值（如 2 天）
-   POST /v1/renew { license_id, device_pub, nonce, ts, sig(设备私钥, nonce||ts) }
+   POST /v1/renew { license_id, device_pub, nonce, ts, mac }
+   （**M2 注记**：设备证明是 **DH-MAC**，不是签名——X25519 不能签名。公式：
+   `ss = ECDH(device_priv, server_proof_pub)`；
+   `key = HKDF-SHA256(ss, salt=utf8(lid), info=utf8("device-proof:"), 32)`；
+   `mac = HMAC-SHA256(key, utf8(lid)||0x00||utf8(nonce)||0x00||utf8(String(ts)))`。）
 2. 服务端验签证明设备持有私钥 → 查吊销/席位/订阅 → 签发新 license
 3. 联网失败但未过 exp：静默继续，缩短下次重试间隔（指数退避 + 抖动）
 4. 已过 exp 未续上：进入 grace，技能照常 + 提示续费
@@ -427,7 +433,7 @@ interface DecryptBackend {
 
 ## 9. 技术选型
 
-- 语言：TypeScript（Node ≥ 20），包管理 pnpm，与 dsh 生态一致。
+- 语言：TypeScript（Node ≥ 20；**M2 注记**：`license-server` 依赖内置 `node:sqlite`，需 **Node ≥ 22.13.0**），包管理 pnpm，与 dsh 生态一致。
 - 密码学：Node 内置 `crypto` —— X25519（ECDH）、HKDF-SHA256、AES-256-GCM、Ed25519。
 - 序列化规范化：JCS（RFC 8785）。
 - 压缩：`zstd`（可选依赖，缺失时退化为不压缩）。
@@ -473,14 +479,14 @@ interface DecryptBackend {
 ```
 docs/sealed-skills/
 ├─ README.md                    生态总览：为什么、能做什么、怎么加入
-├─ spec/pack-format.md          .sealedpack 容器规范 + golden vectors 说明
-├─ spec/license-format.md       license 令牌规范 + 规范化/验签/封装算法
+├─ spec/pack-format.md          .sealedpack 容器规范 + golden vectors 说明   [M4 计划]
+├─ spec/license-format.md       license 令牌规范 + 规范化/验签/封装算法     [M4 计划]
 ├─ spec/protocol.md             授权服务器 HTTP 协议 + 错误码 + 幂等/限流约定
 ├─ guide/author-quickstart.md   30 分钟：从技能目录到可安装包
 ├─ guide/publish-and-license.md 打包、发布、签名、签发与席位管理
-├─ guide/trial-and-marketplace.md 试用与按技能售卖编排
-├─ guide/build-your-own-loader.md 第三方 loader 互操作指南（含测试向量用法）
-└─ guide/threat-model.md        安全属性、残余风险、正确使用方式
+├─ guide/trial-and-marketplace.md 试用与按技能售卖编排                     [M4 计划]
+├─ guide/build-your-own-loader.md 第三方 loader 互操作指南（含测试向量用法） [M4 计划]
+└─ guide/threat-model.md        安全属性、残余风险、正确使用方式           [M4 计划]
 ```
 
 文档要求：每篇含可复制运行的命令与最小示例；规范篇与实现解耦，明确标注「规范 vs 实现」；所有示例在 CI 中作为冒烟测试执行。

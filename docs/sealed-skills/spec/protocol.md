@@ -39,8 +39,10 @@
   （常量时间比较，不区分“缺失”与“错误”）。
 - 请求体超过 `MAX_BODY_BYTES` → `413 BAD_REQUEST`；非法 JSON → `400 BAD_REQUEST`。
 - 服务端对客户端输入**只返回结构化错误**；`500 INTERNAL` 仅用于真正的服务端故障，
-  且消息固定为 `internal error`，绝不携带技能内容、密钥或内部堆栈。
-- 除 `GET /v1/health` 外，未知路径或错误方法 → `404 BAD_REQUEST`。
+  消息不保证是固定字面量（实现里出现过 `internal error` 与 `stored master key is malformed`
+  两种情况），但绝不携带技能内容、密钥或内部堆栈。
+- 除 `GET /v1/health` 外，其余端点均为 `POST`；未知路径或错误方法 → `404 BAD_REQUEST`。
+  （注意：`/v1/health` 为兼容 dsh 探活，对任意方法都返回 `200`。）
 - 公开 `POST` 端点按来源地址滑动窗口限流（默认 60 次/分钟），超限返回 `429 RATE_LIMITED`。
 - `device_pub`、`author_pub` 一律是 **base64url 编码的 32 字节裸公钥**（43 字符，无 padding）。
 
@@ -89,8 +91,8 @@ interface PublishPackRequest {
 为**首次**索取该 pack 的设备签发试用 license。试用范围由发布时的 `trial_entries` 决定；
 **每台设备每个 pack 只能试用一次**（服务端按 `(device_pub, pack_id, version)` 去重）。
 
-响应中的 `license` 是完整签名的 license 令牌字符串（见 §5.2 与
-`docs/sealed-skills/spec/license-format.md`）。试用 license 的 `caps = ["trial"]`，
+响应中的 `license` 是完整签名的 license 令牌字符串（见 §5.2；独立的
+`spec/license-format.md` 为 M4 计划项，尚未编写）。试用 license 的 `caps = ["trial"]`，
 只携带 `trial_entries` 对应的条目密钥。
 
 ```json
@@ -229,7 +231,7 @@ function proofFor(licenseId: string, deviceX25519: KeyObject, serverProofX25519:
 ## 6. 相关文件
 
 - `packages/license-format/src/protocol.ts` —— 协议单一真源（常量、错误码、校验器）。
-- `packages/license-format/src/license.ts` —— license 令牌格式与签验（§5.2）。
+- `packages/license-format/src/token.ts` —— license 令牌格式与签验（§5.2）。
 - `packages/license-server/src/routes.ts` —— 端点处理与错误映射的参考实现。
 - `packages/license-server/src/bin.ts` —— 独立启动入口与环境变量。
 - `docs/sealed-skills/guide/publish-and-license.md` —— 从部署到签发的完整操作指南。

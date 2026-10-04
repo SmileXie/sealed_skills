@@ -143,8 +143,19 @@ export class LicenseClient {
       throw new LicenseDenied('BAD_SERVER_LICENSE', 'license is for a different pack')
     }
     if (payload.dev !== this.devicePub) throw new LicenseDenied('BAD_SERVER_LICENSE', 'license is bound to a different device')
-    this.writeFile(join(this.licensesDir, payload.lid + '.license.json'), license)
-    this.advanceClock(payload.iat * 1000)
+    if (source === 'cache') {
+      // 读缓存时落盘只是幂等刷新：只读/写满的 $SEALED_HOME 不应让一份本来有效的缓存
+      // license 失效（判据已在内存中），因此这里尽力而为，忽略文件系统写入错误。
+      try {
+        this.writeFile(join(this.licensesDir, payload.lid + '.license.json'), license)
+        this.advanceClock(payload.iat * 1000)
+      } catch {
+        // 忽略：本次授权已由内存中的 license 证明，磁盘刷新失败不影响结果。
+      }
+    } else {
+      this.writeFile(join(this.licensesDir, payload.lid + '.license.json'), license)
+      this.advanceClock(payload.iat * 1000)
+    }
     const status = licenseStatus(payload, this.nowMs())
     return { state: status === 'grace' ? 'grace' : 'active', license, payload, source }
   }
@@ -172,7 +183,12 @@ export class LicenseClient {
 
   private async devicePublicB64(): Promise<string> {
     if (!this.devicePub) {
-      const pub = await this.opts.keystore.loadDevicePublicKey()
+      let pub = await this.opts.keystore.loadDevicePublicKey()
+      if (!pub) {
+        // 规范 §7.2 步骤 1：无设备密钥时由客户端生成（保证全新机器上首次挂载即可激活）。
+        await this.opts.keystore.createDeviceKey()
+        pub = await this.opts.keystore.loadDevicePublicKey()
+      }
       if (!pub) throw new LicenseDenied('NO_LICENSE', 'no device key is available')
       this.devicePub = pub.toString('base64url')
     }
