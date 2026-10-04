@@ -20,6 +20,18 @@ importers:
 
   packages/canonical-json: {}
 
+  packages/dsh-sealed-skills:
+    dependencies:
+      '@sealed/canonical-json':
+        specifier: workspace:*
+        version: link:../canonical-json
+      '@sealed/license-format':
+        specifier: workspace:*
+        version: link:../license-format
+      '@sealed/pack-format':
+        specifier: workspace:*
+        version: link:../pack-format
+
   packages/license-format:
     dependencies:
       '@sealed/canonical-json':
