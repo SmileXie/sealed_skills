@@ -333,3 +333,25 @@ Task 1 用本机真实安装的 `@deepseek-ai/dsh@0.2.0-rc.2`（`%TEMP%\dsh-reco
 - **代价（残余风险 / 未验证项）**：用过 sealed 技能的会话，在**未安装本插件的 harness** 上会被拒绝读取整条日志（而非优雅回退占位符）。这与 dsh 对 `image/offload` 的固有行为方向一致（缺插件就不能恢复该会话），但错误更硬。**上游缺口（建议）**：dsh 提供 append-with-ignorable 或 session 级 redaction API。
 - **其它残余风险（fail-safe 方向）**：`/name` 注入的 `user/message` 由 `agent/pre-step` 在水位线内产生；marker 的 `queueMicrotask` 追加失败（重入/校验拒绝）时，模型当次只看到占位符（无明文泄漏）；`apply()` 后的 warm() 仅为尽力而为，未覆盖的条目在恢复会话里同样只显示占位符。
 - **真机 I/O 位置**：`packages/dsh-sealed-skills/src/plugin.ts` 的 `registerDshSessionEventType()`（动态 import，仓库依赖图零 `@deepseek-ai/dsh*`，`pnpm-lock.yaml` 0 引用）；真机断言见 `test/dsh-log-mask.test.ts` 与 `test/dsh-integration.test.ts`（`SEALED_DSH_LAB=1` 门控）。lab 用 junction 挂载本包，Node realpath 解析使裸说明符找不到 dsh，故 lab 测试经 `config.dshSessionModule`（或 `SEALED_DSH_SESSION_MODULE`）传入已解析入口；正常安装（本包与 dsh 同一 `node_modules` 树）用裸说明符即可。
+## 10. M3 残余未验证清单（收敛，2026-10-04）
+
+**已关闭（对照 M2 遗留与 M3 计划）：**
+
+- M2 遗留「loader 未验证」→ Task 3 真机驱动了 profile 加载器 + cordis 内核 + 真实 `SkillRegistry`（见 `notes/dsh-skill-provider.md` §6）。
+- 会话服务名 / `registerMessageProjection` 说明符 → §9.1-9.4 已核实。
+- `ctx.invariants` 注册契约 → §9.6 已核实，并修正了「`fail` 会拆除注册」的错误说法（`session/event` 抛出不传播）。
+- `append` 无法携带 `ignorable: true` → §9.7 实测取代。
+- 两条落盘路径（`tool/result`、`user/message`）→ Task 5 真机断言 durability 只含占位符、派生视图还原明文。
+
+**仍开放 / UNVERIFIED（不得当作已通过）：**
+
+1. 完整 shipped profile（`dsh-base` + `dsh-headless`）需要模型凭证（`DEEPSEEK_API_KEY`）的真实模型回合——**未验证**。
+2. Windows 真实沙箱后端（`dsh-sandbox-local` / `dsh-pwsh-sandbox`）可用性——**未启动**；Task 7 只测了注入的不可用/非 enforcing 分支。
+3. 真实 `ToolRuntime.register` 进入 booted `ctx.tools`——仅用假 runtime + 真实 `defineTool` 证明；端到端注册未驱动。
+4. 真实 `ctx.effect` 对 `sealed.scripts` 的 teardown——未测（测试用假 ctx，省略 `effect`）。
+5. Python 执行分支——仅验证 argv 形状；v1 实际只支持 Node ESM。
+6. `invariants` 哨兵的插件接线（arming）——结构性验证 + 服务可见性探针，无 in-repo 端到端断言；且哨兵是**检测**而非阻断，真实路径唯一信号是 `ctx.logger.warn`。
+7. `sealed/redacted` 缺插件恢复——整条会话被读取器拒绝（§9.7），非优雅回退占位符。
+8. leak-gate 的 `spill/`、`logs/`、`telemetry/` 为 gate 自造内容；真实 harness 表面未验证（仅 durable session log 在 `SEALED_DSH_LAB=1` 下为真）。
+9. 检测为子串匹配：base64/hex 编码或跨字段拆分的正文不可检出（m1/m2 smoke、Task 6 哨兵、leak-gate 共有）。
+10. gated 真机子检查在 CI 中不运行（`SEALED_DSH_LAB` 未设），CI 只证明 standalone gate。

@@ -77,6 +77,34 @@ SealedCore 解密 → dsh 虚拟技能
 - 无日志掩码、无脚本执行沙箱（M3）。
 - 无实时踢下线：吊销延迟 ≤ license TTL（7 天）。
 
+## M3 范围（防泄漏，已实现）
+
+M3 把「明文只在内存」从 M1 的部分断言升级为**在真实 dsh `0.2.0-rc.2` 上可验证的运行时保证**：
+
+```text
+技能正文解密 → 交给 dsh 的虚拟技能（无 path）
+   │
+   ├─ log-mask：写会话日志时正文→⟦sealed:pack:entry⟧ 占位符；派生视图读取时还原明文
+   ├─ invariants：已提交会话事件中出现 sealed 明文 → 运行时哨兵告警（纵深防御）
+   └─ tool-runtime：包内 scripts/ 以 defineTool 注册；源码只在内存、经沙箱 confine 后写入子进程 stdin
+                       │
+                       └─ 会话日志 / spill / 临时目录 / 日志 / 遥测：金丝雀零命中（leak-gate）
+```
+
+**M3 已实现**
+
+- `dsh-sealed-skills` 对齐 dsh `0.2.0-rc.2` 接缝（optional peer + `cordis.patch.yml` bundle patch），真实 profile 集成测试（`test/dsh-integration.test.ts`）与真机实验台（`scripts/dsh-lab.mjs`，环境变量 `SEALED_DSH_LAB=1` 门控；未设门控时**响亮 skip**，不伪装通过）。
+- `log-mask`（`src/log-mask.ts`）：注册 dsh 消息投影；两条落盘路径（内建 `skill` 工具的 `tool/result`、`/name` 的 `user/message`）落盘为占位符，模型派生视图还原明文；`log-mask` 未就绪时 skill-provider **fail-closed 拒绝服务**（宁可不可用，也不产生明文日志）。
+- `invariants`（`src/invariant.ts`）：包级运行时哨兵，已提交会话事件不得含 sealed 明文（**检测而非阻断**；命中即告警，不关停 provider）。
+- `tool-runtime`（`src/tool-runtime.ts`）：包内 `scripts/` 条目 → `sealed_script_*` 工具；源码只在内存、经 `ctx.sandbox.confine` 后写子进程 **stdin**（不进 argv、不经临时文件），用后零化；沙箱不可用或非 fully-enforcing 时**拒绝脚本工具但纯提示词技能不受影响**；子进程输出若回显源码 → `output-redacted`。
+- `scripts/leak-gate.mjs`：金丝雀扫描（会话日志含 zstd、spill、temp、logs、telemetry）+ spec §8 错误表 32 行 + 解密中途 SIGKILL 崩溃残留；`corepack pnpm leak-gate` 打印 `leak-gate: clean`，CI 见 `.github/workflows/leak-gate.yml`。
+
+**M3 明确不做 / 上游缺口（如实记录）**
+
+- `sealed/redacted` 事件兼容：dsh 0.2.x 的 `session.append` **无法**携带 `ignorable: true`，插件改为在 apply 时把该类型注册进 dsh 导出的 `KNOWN_SESSION_EVENT_TYPES`。**代价**：用过 sealed 技能的会话，若在**未装本插件**的 harness 上打开，读取器会**整条拒绝**（而非优雅回退占位符）。这是 dsh 上游缺口（建议 upstream 提供 append-with-ignorable 或 session 级 redaction API），详见 `docs/sealed-skills/notes/dsh-0.2-seams.md` §9.7。
+- OS 密钥库后端仍属 Plan 2B；设备私钥仍明文落盘于 `$SEALED_HOME/device.json`。
+- Windows 真实沙箱后端未启用；不可用分支已实现并测试（注入不可用沙箱）。
+- 无法在本机跑通需要模型凭据的完整 `dsh-base`+`dsh-headless` 模型回合（`DEEPSEEK_API_KEY`）——标为**未验证**。
 ## 六个包各自的职责
 
 | 包 | 职责 | 关键导出 |
@@ -144,7 +172,7 @@ disk-leak-check: clean (no plaintext body in .sealed-home/ artifacts)
 corepack pnpm -r test
 ```
 
-六个包各自跑 vitest；当前基线为 **170 个测试全绿**（`canonical-json` 5、`pack-format` 36、`license-format` 19、`seal-cli` 32、`license-server` 28、`dsh-sealed-skills` 50）。
+六个包各自跑 vitest；M3 完成后的基线为 **275 个测试全绿 + 5 个显式门控 skip**（`canonical-json` 5、`pack-format` 36、`license-format` 19、`seal-cli` 32、`license-server` 28、`dsh-sealed-skills` 155）。另加 `corepack pnpm leak-gate` 金丝雀扫描作为发布前置 gate。
 
 ## 打包与签发试用 license
 
@@ -196,14 +224,14 @@ entries: meta, skill:translate:body
 
 | 编号 | 属性 | M1 状态 |
 |---|---|---|
-| S1 | 磁盘产物中不出现技能正文/脚本明文 | ⚠️ 部分自动断言：`m1-smoke.mjs` 断言正文不出现在其三个落盘产物中；`m2-smoke.mjs` 遍历 `.sealed-home/` 下**全部**产物（密文包 / license / 设备密钥 / 时钟 / 试用目录）做同样比对。脚本条目、错误输出、临时文件与会话日志**尚未**纳入自动断言 |
+| S1 | 磁盘产物中不出现技能正文/脚本明文 | ✅ M3：`m1/m2-smoke` 覆盖 `.sealed-home/`；`scripts/leak-gate.mjs` 在**会话日志（含 zstd）、spill、临时目录、日志、遥测、崩溃残留**上做金丝雀扫描并断言零命中（`SEALED_DSH_LAB=1` 时含真实 dsh 会话日志）；脚本源码只经子进程 stdin，不进 argv/临时文件 |
 | S2 | 无有效 license 无法解密任何条目 | ✅ `SealedCore` 逐条目解封，缺 grant → `NOT_GRANTED` |
 | S3 | license 与设备绑定，换机不可用 | ✅ CK 用设备 X25519 公钥封装 |
 | S4 | 试用 license 解不开非试用条目 | ✅ license 只包含被授权条目的封装密钥 |
 | S5 | 篡改包内容必被检测 | ✅ manifest Ed25519 签名 + 逐条目 GCM 认证标签 |
 | S6 | 包密文与客户无关，license 是唯一按客户产物 | ✅ 同一份 `.sealedpack` 可给所有客户 |
 | S7 | 吊销在 TTL 内生效 | ✅ 服务端标记吊销并释放席位；客户端最迟下次续期（≤ 一个 TTL）失效 |
-| — | 会话日志 / spill / 遥测不得出现明文 | ⛔ M1 无日志掩码，属 M3 |
+| — | 会话日志 / spill / 遥测不得出现明文 | ✅ M3：`log-mask` 消息投影（密文/占位落盘、明文只在派生视图）+ `invariants` 运行时哨兵 + leak-gate 金丝雀扫描 |
 
 **明确接受的残余风险（M1 与实际部署都适用）**
 
@@ -225,15 +253,17 @@ entries: meta, skill:translate:body
 - **M2（已实现）授权闭环**：`license-server`（activate / renew / trial / revoke / publish）+
   `license-client` 状态机 + 离线宽限期与时钟回拨检测 + 席位与吊销 + S7。
   **Plan 2B（尚未实现）**：DPAPI / Keychain / libsecret 密钥库后端与缺省 fail-closed 退路。
-- **M3（尚未实现）防泄漏**：`log-mask`（消息投影掩码，退路为自定义 `SessionPersistence` provider）+
-  金丝雀泄漏扫描 CI gate + `ctx.invariants` 插件 + `tool-runtime` 脚本执行。
+- **M3（已实现）防泄漏**：`log-mask` 消息投影 + `ctx.invariants` 运行时哨兵 + `tool-runtime` 沙箱脚本执行
+  + 金丝雀泄漏扫描 CI gate（`pnpm leak-gate`）+ 真实 dsh 0.2.0-rc.2 集成与实验台。
+  **上游缺口**：缺插件 harness 打开 sealed 会话会被整条拒绝（见 notes §9.7）；OS 密钥库仍属 Plan 2B。
 - **M4（尚未实现）生态与交付**：`docs/sealed-skills/` 完整七篇 + golden vectors + 发布流程与 CI。
 - **M5（尚未实现，可选）加固**：原生 / WASM `DecryptBackend`，让设备私钥与内容密钥不进入 JS 堆。
 
-M1/M2 的文档交付物：本文件、`guide/author-quickstart.md`、`guide/publish-and-license.md`、
-`guide/for-skill-developers.md`、`spec/protocol.md` 与 `notes/dsh-skill-provider.md`。
-`spec/pack-format.md`、`spec/license-format.md`、`trial-and-marketplace`、`build-your-own-loader`、
-`threat-model` 等篇目仍属 M4，尚未编写。
+当前文档交付物：本文件、`guide/author-quickstart.md`、`guide/publish-and-license.md`、
+`guide/for-skill-developers.md`、`spec/protocol.md`、`notes/dsh-skill-provider.md` 与
+`notes/dsh-0.2-seams.md`（M3 真机接缝权威，含 §9.7 上游缺口）。
+`spec/pack-format.md`、`spec/license-format.md`、`guide/trial-and-marketplace.md`、
+`guide/build-your-own-loader.md`、`guide/threat-model.md` 与 golden vectors 属 M4，尚未编写。
 
 ## 仓库布局
 
@@ -244,14 +274,17 @@ sealed_skills/
 │  ├─ pack-format/             .sealedpack 容器 / 派生 / AEAD
 │  ├─ license-format/          license 令牌 / X25519 / CK 封装
 │  ├─ seal-cli/                作者工具（打包 / 检查 / 本机试用 license）
-│  ├─ dsh-sealed-skills/       运行时（keystore / core / provider / license-client / plugin）
+│  ├─ dsh-sealed-skills/       运行时（keystore / core / provider / license-client / plugin / log-mask / invariant / tool-runtime）
 │  └─ license-server/          授权服务器（端点 / SQLite / 签发 / 续期 / 吊销）
 ├─ demo/
 │  ├─ translate/SKILL.md       示例技能源码（明文，作者侧固有）
+│  ├─ translate/scripts/       示例脚本条目（script:translate:run.mjs）
 │  └─ cordis.yml               dsh 挂载示例（路径需替换，见上文）
 ├─ scripts/
 │  ├─ m1-smoke.mjs             M1 端到端冒烟
-│  └─ m2-smoke.mjs             M2 授权闭环端到端冒烟
+│  ├─ m2-smoke.mjs             M2 授权闭环端到端冒烟
+│  ├─ dsh-lab.mjs              真机 dsh 实验台（.dsh-lab/，SEALED_DSH_LAB=1 门控）
+│  └─ leak-gate.mjs            M3 金丝雀泄漏扫描 gate（pnpm leak-gate）
 ├─ docs/sealed-skills/         生态文档（README / spec / guide / notes）
 └─ docs/superpowers/           设计与计划（含本任务的 plan / spec）
 ```
@@ -263,4 +296,5 @@ sealed_skills/
 - `docs/sealed-skills/guide/publish-and-license.md` —— 部署服务器、登记、签发、续期、席位、吊销。
 - `docs/sealed-skills/spec/protocol.md` —— 授权服务器 HTTP 协议参考（端点 / 错误码 / 设备证明）。
 - `docs/sealed-skills/notes/dsh-skill-provider.md` —— 真实 dsh `SkillProvider` 契约、适配差异与未验证项。
+- `docs/sealed-skills/notes/dsh-0.2-seams.md` —— M3 真机接缝权威（tool/sandbox/invariants/session 契约，逐条 file:line；§9.7 上游缺口）。
 - `docs/superpowers/specs/2026-10-04-sealed-skills-design.md` —— 完整设计规范（格式、密码学、里程碑）。
