@@ -37,18 +37,24 @@ export function createSkillProvider(core: Pick<SealedCore, 'list' | 'readSkill'>
 // --- dsh `SkillProvider` adapter -------------------------------------------------
 //
 // The types below mirror the REAL published dsh service contract. They were verified
-// from the npm tarball `@deepseek-ai/dsh-skill@0.0.1-rc.1` (fetched from registry.npmjs.org),
-// inside `package/lib/types/index.d.ts`:
+// against the npm tarball `@deepseek-ai/dsh-skill@0.2.0-rc.2` (registry.npmjs.org), inside
+// `package/lib/types/index.d.ts`:
 //
-//   L44-59   SkillSummary            { name, description, whenToUse?, invocation, source, provider, resourceBase? }
-//   L61-70   SkillCandidate          extends SkillSummary { rank, locator, path?, metadata? }
-//   L72-79   SkillDefinition         extends SkillSummary { content, path?, metadata? }
-//   L88-104  SkillLookupOptions      { cwd?, signal? } / SkillViewOptions { scope? }
-//   L154-159 SkillCatalogSnapshot    { skills, complete }
-//   L161-166 SkillProviderObservation{ candidates, complete }
-//   L168-188 SkillProvider           { name; list(options); get(candidate, options) }
-//   L190-195 SkillProviderControl    { signal, invalidate }
-//   L249     SkillService.registerProvider(create: (control) => SkillProvider): () => void
+//   L44-61   SkillSummary            { path?, name, description, whenToUse?, invocation, source, provider, resourceBase? }
+//   L63-70   SkillCandidate          extends SkillSummary { rank, locator, metadata? }
+//   L72-77   SkillDefinition         extends SkillSummary { content, metadata? }
+//   L86-101  SkillLookupOptions      { cwd?, signal? } / SkillViewOptions { scope? }
+//   L152-157 SkillCatalogSnapshot    { skills, complete }
+//   L159-164 SkillProviderObservation{ candidates, complete }
+//   L166-186 SkillProvider           { name; list(options); get(candidate, options) }
+//   L188-193 SkillProviderControl    { signal, invalidate }
+//   L225/247 SkillRegistry.registerProvider(create: (control) => SkillProvider): () => void
+//
+// 0.2.x drift: the class was renamed `SkillService` -> `SkillRegistry` (the cordis service
+// name is still `skills`; see `declare module '@deepseek-ai/cordis'` at index.d.ts:199-202),
+// and `path?: string` moved up to `SkillSummary` as the marker for a filesystem-backed
+// skill, "absent for virtual skills" (index.d.ts:45-46). A sealed skill is virtual, so it
+// emits no `path` and no `resourceBase` — that is our supported contract, not an omission.
 //
 // They are re-declared structurally instead of importing `@deepseek-ai/dsh-skill`, so this
 // package keeps no dependency on dsh and the adapter stays unit-testable in isolation.

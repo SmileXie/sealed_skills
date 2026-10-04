@@ -12,10 +12,13 @@ import { createDshSkillProvider, type DshSkillProvider, type DshSkillProviderCon
  *
  * VERIFICATION: the `SkillProvider` / `SkillProviderControl` /
  * `ctx.skills.registerProvider()` shapes this file targets were verified against the
- * published `@deepseek-ai/dsh-skill@0.0.1-rc.1` type declarations (see provider.ts for
- * the exact file + line map). The git clone of the harness repository failed in this
- * environment, so the *plugin loader* details below are UNVERIFIED — see
- * `docs/sealed-skills/notes/dsh-skill-provider.md`.
+ * published `@deepseek-ai/dsh-skill@0.2.0-rc.2` type declarations (see provider.ts for
+ * the exact file + line map; the cordis service name is still `skills`, and the class was
+ * renamed `SkillService` -> `SkillRegistry`). The package declares the matching dsh peer
+ * dependencies (optional, so it still builds/tests without dsh) so app-boot's
+ * compatibility preflight does not skip it — see package.json. The *plugin loader* details
+ * (profile wiring, `cordis.yml` mount syntax) remain UNVERIFIED until the M3 dsh-lab task
+ * runs — see `docs/sealed-skills/notes/dsh-0.2-seams.md`.
  */
 
 /**

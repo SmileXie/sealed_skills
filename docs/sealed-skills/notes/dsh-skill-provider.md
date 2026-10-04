@@ -1,3 +1,7 @@
+> **SUPERSEDED (M3 recon):** the seam facts here were verified against `@deepseek-ai/dsh-skill@0.0.1-rc.1`. See `docs/sealed-skills/notes/dsh-0.2-seams.md` for the current 0.2.x contract. Kept for history.
+>
+> **M3 Task 1 measured addendum:** re-verified against an installed `@deepseek-ai/dsh@0.2.0-rc.2` on this machine — the cordis session service is `sessions`, the projection API is `sessions.registerMessageProjection(...)`, and the `SessionEventMap` augmentation specifier is `@deepseek-ai/dsh-session/types`. See §9 of the superseding note for file:line evidence. The skill seam drifted only in `SkillService`→`SkillRegistry` and `SkillSummary.path?`; neither breaks our adapter.
+
 # 真实 dsh `SkillProvider` 契约与我们的适配
 
 - 状态：**接口签名 = 已验证（verified）**；**插件加载/接线 = 未验证（未验证）**
