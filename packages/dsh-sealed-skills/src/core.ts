@@ -11,6 +11,12 @@ export interface SkillSummary {
 }
 export interface SkillDefinition extends SkillSummary { content: string }
 
+/** A script:<name>:<path> entry declared by a skill's meta (M3 Task 7). */
+export interface SealedScriptEntry {
+  readonly entryId: string
+  readonly skillName: string
+}
+
 export type SealedErrorCode = 'PACK_SIGNATURE' | 'LICENSE_INVALID' | 'LICENSE_EXPIRED' | 'NOT_GRANTED' | 'DECRYPT_FAILED' | 'META_INVALID'
 export class SealedError extends Error {
   constructor(readonly code: SealedErrorCode, message: string) {
@@ -95,6 +101,18 @@ export class SealedCore {
     const definition: SkillDefinition = { name: skill.name, description: skill.description, invocation: skill.invocation, content }
     if (skill.whenToUse) definition.whenToUse = skill.whenToUse
     return definition
+  }
+
+  /** Script entries declared by the already-decrypted meta, so Task 7 can register one tool each. */
+  async listScriptEntries(): Promise<SealedScriptEntry[]> {
+    const meta = await this.loadMeta()
+    const out: SealedScriptEntry[] = []
+    for (const skill of meta.skills) {
+      for (const entry of skill.entries) {
+        if (entry.startsWith('script:')) out.push({ entryId: entry, skillName: skill.name })
+      }
+    }
+    return out
   }
 
   async readEntry(id: string): Promise<Buffer> {

@@ -30,6 +30,15 @@ import {
   type InvariantInstaller,
   type InvariantRegistry,
 } from './invariant.js'
+import {
+  inferSealedScriptRuntime,
+  registerSealedScriptTools,
+  type DefineToolLike,
+  type SandboxProviderLike,
+  type SealedScriptDeps,
+  type SealedScriptSpec,
+  type ToolRuntimeLike,
+} from './tool-runtime.js'
 
 /**
  * dsh entrypoint for the `dsh-sealed-skills` bundle.
@@ -95,6 +104,20 @@ export interface SealedSkillsConfig {
    * `SEALED_DSH_SESSION_MODULE`.
    */
   readonly dshSessionModule?: string
+  /**
+   * Absolute working directory for sealed script executions (Task 7). It becomes the sandbox
+   * policy's `workspaceRoot`; defaults to `process.cwd()`. Sealed scripts always run `read-only`,
+   * so this root is where they start, not a place they may write.
+   */
+  readonly workspaceRoot?: string
+  /** Optional per-script time limit (ms) applied to every generated tool. */
+  readonly scriptTimeoutMs?: number
+  /**
+   * Test/lab seam: the dsh `defineTool` builder used to produce the sealed script tools. Defaults
+   * to dynamically importing `@deepseek-ai/dsh-tools` (the specifier is a string variable so tsc
+   * never resolves the optional peer). Pass `null` to declare the builder absent.
+   */
+  readonly defineTool?: DefineToolLike | null
 }
 
 /** The only part of the dsh context surface this plugin depends on. */
@@ -116,6 +139,14 @@ export interface SkillsContext {
    * skipped with a redacted warning — it must NEVER gate the skill provider (unlike the log-mask).
    */
   readonly invariants?: InvariantRegistry
+  /**
+   * Sealed-script seams (Task 7). Both are read opportunistically AFTER the log-mask is ready:
+   * when either service is absent the sealed script tools are skipped with a redacted warning and
+   * the prompt-only skills keep working. NEVER add these to `inject` — a missing optional service
+   * must not pend the whole plugin (which would take the skill provider down with it).
+   */
+  readonly tools?: ToolRuntimeLike
+  readonly sandbox?: SandboxProviderLike
   /**
    * cordis effect scope. When present the sentinel registration is owned by the plugin fiber
    * (disposed with it); when absent `apply` keeps the disposer and tears it down itself.
@@ -232,6 +263,29 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () =
       }
       throw new Error('no such sealed skill')
     },
+    async listScriptEntries() {
+      const entries: { entryId: string; skillName: string }[] = []
+      for (const mount of mounts) {
+        try {
+          entries.push(...await (await coreFor(mount)).listScriptEntries())
+        } catch {
+          // Fail closed for THIS mount only, exactly like list() above.
+        }
+      }
+      return entries
+    },
+    async readScriptEntry(entryId: string) {
+      for (const mount of mounts) {
+        try {
+          const core = await coreFor(mount)
+          if (!(await core.listScriptEntries()).some((entry) => entry.entryId === entryId)) continue
+          return await core.readEntry(entryId)
+        } catch {
+          continue
+        }
+      }
+      throw new Error('no such sealed script entry')
+    },
   }
 
   // --- Log-mask wiring (Task 5) ---------------------------------------------------------------
@@ -281,6 +335,52 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () =
     disposeInvariant = register()
   }
 
+  // Task 7: register one sandboxed tool per `script:<name>:<path>` entry. Best-effort by design:
+  // a missing tools/sandbox service, an unavailable dsh tool builder, or a single bad registration
+  // all degrade to a redacted warning and never affect the skill provider or prompt-only skills.
+  let disposeScriptTools: (() => void) | undefined
+  const registerSealedScriptToolsBestEffort = async (): Promise<void> => {
+    try {
+      const tools = ctx.tools
+      const sandbox = ctx.sandbox
+      if (tools === undefined || typeof tools.register !== 'function') {
+        warn('[sealed-skills] the dsh tools service is unavailable; sealed script tools are not registered')
+        return
+      }
+      if (sandbox === undefined || typeof sandbox.confine !== 'function') {
+        warn('[sealed-skills] the dsh sandbox service is unavailable; sealed script tools are not registered')
+        return
+      }
+      const workspaceRoot = config.workspaceRoot ?? process.cwd()
+      const entries = await aggregate.listScriptEntries()
+      if (entries.length === 0) return
+      const specs: SealedScriptSpec[] = entries.map((entry) => ({
+        name: entry.skillName,
+        entryId: entry.entryId,
+        runtime: inferSealedScriptRuntime(entry.entryId),
+        policy: { mode: 'read-only', workspaceRoot },
+        ...(typeof config.scriptTimeoutMs === 'number' ? { timeoutMs: config.scriptTimeoutMs } : {}),
+      }))
+      const deps: SealedScriptDeps = {
+        readEntry: (entryId) => aggregate.readScriptEntry(entryId),
+        confine: (argv, policy, signal) => sandbox.confine(argv, policy, signal),
+      }
+      const dispose = await registerSealedScriptTools(tools, specs, deps, config.defineTool, warn)
+      const effect = ctx.effect
+      if (typeof effect === 'function') {
+        try {
+          effect(() => dispose, 'sealed.scripts')
+          return
+        } catch {
+          // Fall through: keep the disposer ourselves so a missing effect cannot lose it.
+        }
+      }
+      disposeScriptTools = dispose
+    } catch {
+      warn('[sealed-skills] sealed script tools could not be registered')
+    }
+  }
+
   const readiness: Promise<void> = (async () => {
     const registerType = config.registerSessionEventType
       ?? ((type: string) => registerDshSessionEventType(type, config.dshSessionModule))
@@ -302,6 +402,9 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () =
     } catch {
       // Defense-in-depth only: a sentinel wiring failure must never close the fail-closed gate.
     }
+    // Task 7: sealed scripts are skill content, so they respect the same fail-closed gate, but a
+    // registration failure here must never close it in turn (fire-and-forget, redacted warnings).
+    void registerSealedScriptToolsBestEffort()
   })()
 
   // Never let a readiness failure surface as an unhandled rejection; make it visible (redacted).
@@ -372,6 +475,11 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () =
     }
     try {
       disposeInvariant?.()
+    } catch {
+      // Best-effort teardown (only set when ctx.effect was unavailable).
+    }
+    try {
+      disposeScriptTools?.()
     } catch {
       // Best-effort teardown (only set when ctx.effect was unavailable).
     }

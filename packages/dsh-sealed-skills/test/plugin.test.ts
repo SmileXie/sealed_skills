@@ -55,12 +55,13 @@ function buildPack(): { file: Buffer; manifest: PackManifest } {
         skills: [{
           name: 'translate', description: 'gate fixture',
           invocation: { modelInvocable: true, userInvocable: true },
-          entries: ['skill:translate:body'],
+          entries: ['skill:translate:body', 'script:translate:run.mjs'],
         }],
         resources: {},
       }),
     },
     { id: 'skill:translate:body', type: 'text', body: BODY },
+    { id: 'script:translate:run.mjs', type: 'script', body: 'console.log("sealed script ok")\n' },
   ]
   const manifest: PackManifest = { pack_id: packId, version, label: 'gate', entry_count: entries.length, entries: [] }
   const chunks = entries.map((entry) => {
@@ -132,6 +133,14 @@ function mountConfig(fixture: GateFixture) {
     serverUrl: fixture.url,
     serverProofPubB64: fixture.proofPublicB64,
     keystoreDir: fixture.home,
+  }
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('waitFor: timed out')
+    await new Promise((resolve) => setTimeout(resolve, 10))
   }
 }
 
@@ -248,5 +257,48 @@ describe('sealed-skills plugin log-mask fail-closed', () => {
     expect(tokens[0]).toMatch(/^[A-Za-z0-9_-]{22}$/)
     expect(content).not.toContain(BODY)
     expect(existsSync(join(fixture.home, 'device.json'))).toBe(true)
+  })
+
+  it('refuses a sealed script when the sandbox is unavailable and still serves prompt-only skills', async () => {
+    const fixture = await mountRealPack()
+    const registered: { name: string; execute: (args: unknown, exec: { signal: AbortSignal }) => Promise<unknown> }[] = []
+    const { ctx, provider } = fakeContext({
+      sessions: { registerMessageProjection: () => async () => {} },
+      on: () => () => {},
+      tools: {
+        register: (definition) => {
+          registered.push(definition as unknown as (typeof registered)[number])
+          return () => {}
+        },
+      },
+      sandbox: {
+        confine: async () => {
+          throw Object.assign(new Error('no sandbox backend CANARY'), { code: 'SANDBOX_UNAVAILABLE', name: 'SandboxUnavailableError' })
+        },
+      },
+    })
+    apply(ctx, {
+      ...mountConfig(fixture),
+      registerSessionEventType: () => {},
+      workspaceRoot: process.cwd(),
+      defineTool: (options) => ({
+        name: options.name, description: options.description, parameters: options.parameters,
+        presentation: options.presentation, output: options.output, execute: options.execute,
+      }),
+    })
+    await waitFor(() => registered.some((definition) => definition.name === 'sealed_script_translate_run_mjs'))
+
+    const script = registered.find((definition) => definition.name === 'sealed_script_translate_run_mjs')!
+    const value = await script.execute({}, { signal: new AbortController().signal })
+    expect(value).toMatchObject({ ok: false, reason: 'sandbox-unavailable' })
+    expect(JSON.stringify(value)).not.toContain('CANARY')
+
+    // The refusal above must not have gated the prompt-only skill path.
+    const candidates = (await provider().list({})) as DshSkillCandidate[]
+    expect(candidates.map((candidate) => candidate.name)).toEqual(['translate'])
+    const definition = await provider().get(candidates[0], {})
+    const content = definition?.content ?? ''
+    expect(parsePlaceholder(content)).toHaveLength(1)
+    expect(content).not.toContain(BODY)
   })
 })
