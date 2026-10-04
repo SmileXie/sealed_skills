@@ -1,5 +1,5 @@
 import { generateKeyPairSync, randomBytes, type KeyObject } from 'node:crypto'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -127,5 +127,72 @@ describe('SealedCore', () => {
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
     await expect(core.readSkill('translate')).rejects.toMatchObject({ code: 'DECRYPT_FAILED' })
+  })
+
+  it('rejects an unknown skill name with META_INVALID', async () => {
+    const ks = await newKeystore()
+    const core = new SealedCore({
+      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body']),
+      trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    await expect(core.readSkill('nope')).rejects.toMatchObject({ code: 'META_INVALID' })
+  })
+
+  it('rejects a meta entry that is not valid JSON', async () => {
+    const ks = await newKeystore()
+    const badPack = buildPack([{ id: 'meta', type: 'meta', body: '{ not json' }])
+    const core = new SealedCore({
+      pack: badPack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
+      trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    await expect(core.list()).rejects.toMatchObject({ code: 'META_INVALID' })
+  })
+
+  it('rejects a meta entry whose skills is not an array', async () => {
+    const ks = await newKeystore()
+    const badPack = buildPack([{ id: 'meta', type: 'meta', body: JSON.stringify({ skills: 'nope', resources: {} }) }])
+    const core = new SealedCore({
+      pack: badPack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
+      trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    await expect(core.list()).rejects.toMatchObject({ code: 'META_INVALID' })
+  })
+
+  it('rejects a meta entry with a malformed skill element as META_INVALID, not a TypeError', async () => {
+    const ks = await newKeystore()
+    const body = JSON.stringify({ skills: [{ name: 'translate', description: 'd', invocation: { modelInvocable: true, userInvocable: true } }], resources: {} })
+    const badPack = buildPack([{ id: 'meta', type: 'meta', body }])
+    const core = new SealedCore({
+      pack: badPack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
+      trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    await expect(core.list()).rejects.toMatchObject({ code: 'META_INVALID' })
+    await expect(core.readSkill('translate')).rejects.toMatchObject({ code: 'META_INVALID' })
+  })
+
+  it('rejects a null skill element as META_INVALID, not a TypeError', async () => {
+    const ks = await newKeystore()
+    const badPack = buildPack([{ id: 'meta', type: 'meta', body: JSON.stringify({ skills: [null], resources: {} }) }])
+    const core = new SealedCore({
+      pack: badPack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
+      trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    await expect(core.list()).rejects.toMatchObject({ code: 'META_INVALID' })
+  })
+
+  it('reports a corrupt device keystore as LICENSE_INVALID', async () => {
+    const ks = await newKeystore()
+    const license = licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body'])
+    writeFileSync(join(ks.dir, 'device.json'), '{ not json', 'utf8')
+    const core = new SealedCore({
+      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license, trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    await expect(core.readSkill('translate')).rejects.toMatchObject({ code: 'LICENSE_INVALID' })
   })
 })

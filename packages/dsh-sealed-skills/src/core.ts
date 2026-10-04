@@ -24,6 +24,19 @@ interface MetaShape {
   resources: Record<string, string>
 }
 
+function isSkillMeta(value: unknown): value is SkillSummary & { entries: string[] } {
+  if (value === null || typeof value !== 'object') return false
+  const skill = value as Record<string, unknown>
+  if (typeof skill.name !== 'string' || typeof skill.description !== 'string') return false
+  const invocation = skill.invocation
+  if (invocation === null || typeof invocation !== 'object') return false
+  const inv = invocation as Record<string, unknown>
+  if (typeof inv.modelInvocable !== 'boolean' || typeof inv.userInvocable !== 'boolean') return false
+  if (!Array.isArray(skill.entries) || !skill.entries.every((entry) => typeof entry === 'string')) return false
+  if (skill.whenToUse !== undefined && typeof skill.whenToUse !== 'string') return false
+  return true
+}
+
 export class SealedCore {
   private readonly parsed: ReturnType<typeof readContainer>
   private readonly payload: LicensePayload
@@ -73,7 +86,12 @@ export class SealedCore {
     this.assertUsable()
     const chunk = this.parsed.chunks.find((c) => c.id === id)
     if (!chunk) throw new SealedError('NOT_GRANTED', 'no such entry or not granted: ' + id)
-    const raw = await this.opts.keystore.loadDevicePrivateKey()
+    let raw: Buffer | undefined
+    try {
+      raw = await this.opts.keystore.loadDevicePrivateKey()
+    } catch {
+      throw new SealedError('LICENSE_INVALID', 'device keystore is unavailable')
+    }
     if (!raw) throw new SealedError('LICENSE_INVALID', 'no device key is available')
     let deviceKey: KeyObject
     try {
@@ -106,14 +124,21 @@ export class SealedCore {
   private async loadMeta(): Promise<MetaShape> {
     if (!this.meta) {
       const raw = (await this.readEntry('meta')).toString('utf8')
-      let parsed: MetaShape
+      let parsed: unknown
       try {
-        parsed = JSON.parse(raw) as MetaShape
+        parsed = JSON.parse(raw)
       } catch {
         throw new SealedError('META_INVALID', 'meta entry is not valid JSON')
       }
-      if (!Array.isArray(parsed.skills)) throw new SealedError('META_INVALID', 'meta entry has no skills array')
-      this.meta = parsed
+      if (parsed === null || typeof parsed !== 'object') {
+        throw new SealedError('META_INVALID', 'meta entry has an unexpected shape')
+      }
+      const meta = parsed as { skills?: unknown }
+      if (!Array.isArray(meta.skills)) throw new SealedError('META_INVALID', 'meta entry has no skills array')
+      for (const skill of meta.skills) {
+        if (!isSkillMeta(skill)) throw new SealedError('META_INVALID', 'meta entry has a malformed skill')
+      }
+      this.meta = parsed as MetaShape
     }
     return this.meta
   }
