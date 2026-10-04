@@ -2,14 +2,15 @@ import { diffieHellman, randomBytes, timingSafeEqual } from 'node:crypto'
 import {
   LICENSE_TTL_SECONDS, LICENSE_GRACE_SECONDS, MAX_CLOCK_SKEW_SECONDS, NONCE_TTL_SECONDS,
   deviceProofKey, deviceProofMac, deviceProofMessage, unb64u,
-  validateActivateRequest, validateRenewRequest, validateRevokeRequest, validateTrialRequest,
+  isRawEd25519Pub, ProtocolRequestError, validateActivateRequest, validatePublishPackRequest,
+  validateRenewRequest, validateRevokeRequest, validateTrialRequest,
   x25519PrivateFromRaw, x25519PublicFromRaw,
 } from '@sealed/license-format'
 import { issueLicense } from './issue.js'
-import { unwrapMaster } from './master-store.js'
+import { unwrapMaster, wrapMaster } from './master-store.js'
 import { HttpError } from './http.js'
 import type { ServerKeys } from './keys.js'
-import type { LicenseRecord, Store } from './store.js'
+import type { LicenseRecord, PackRecord, Store } from './store.js'
 
 export function generateLicenseId(prefix: string, now: number): string {
   return 'lic_' + prefix + '_' + now + '_' + randomBytes(4).toString('hex')
@@ -158,4 +159,41 @@ export function handleRevoke(store: Store, body: unknown, now: number): RouteRes
     store.appendAudit({ at: now, action: 'revoke', actor: 'admin', subject: record.licenseId, detail: record.packId + '@' + record.version })
   }
   return { status: 200, body: { revoked } }
+}
+
+export function handlePublishPack(store: Store, keys: ServerKeys, body: unknown, now: number): RouteResult {
+  let request: ReturnType<typeof validatePublishPackRequest>
+  try {
+    request = validatePublishPackRequest(body)
+  } catch (error) {
+    if (error instanceof ProtocolRequestError) throw new HttpError(400, 'BAD_REQUEST', error.message)
+    throw error
+  }
+  if (!isRawEd25519Pub(request.author_pub)) throw new HttpError(400, 'BAD_REQUEST', 'author_pub must be a raw Ed25519 public key')
+  const master = unb64u(request.master_b64)
+  if (master.length !== 32) {
+    master.fill(0)
+    throw new HttpError(400, 'BAD_REQUEST', 'master_b64 must decode to exactly 32 bytes')
+  }
+  const idempotencyKey = 'publish:' + request.pack.id + '@' + request.pack.version
+  const cached = store.getIdempotent(idempotencyKey)
+  if (cached) {
+    master.fill(0)
+    return { status: 200, body: JSON.parse(cached) as unknown }
+  }
+  let record: PackRecord
+  try {
+    record = {
+      packId: request.pack.id, version: request.pack.version, label: request.label,
+      authorPub: request.author_pub, masterWrapped: wrapMaster(master, keys.masterWrapKey),
+      trialEntries: request.trial_entries, entries: request.entries,
+    }
+  } finally {
+    master.fill(0)
+  }
+  store.putPack(record, now)
+  store.appendAudit({ at: now, action: 'publish', actor: 'admin', subject: record.packId + '@' + record.version, detail: record.label })
+  const response = { pack: { id: record.packId, version: record.version }, entries: record.entries.length }
+  store.putIdempotent(idempotencyKey, JSON.stringify(response), now)
+  return { status: 200, body: response }
 }

@@ -50,3 +50,20 @@ export function isAuthorized(req: IncomingMessage, adminToken: string): boolean 
   if (provided.length !== expected.length) return false
   return timingSafeEqual(provided, expected)
 }
+
+/** In-process sliding window rate limiter; keys are typically `remoteAddress`. Timestamps outside the window are trimmed. */
+export function createRateLimiter(opts: { windowMs: number; max: number; now?: () => number }): { check(key: string): boolean } {
+  const now = opts.now ?? Date.now
+  const hits = new Map<string, number[]>()
+  return {
+    check(key: string): boolean {
+      const t = now()
+      const recent = (hits.get(key) ?? []).filter((at) => t - at < opts.windowMs)
+      if (recent.length >= opts.max) { hits.set(key, recent); return false }
+      recent.push(t)
+      hits.set(key, recent)
+      if (hits.size > 10_000) for (const [k, v] of hits) if (v.every((at) => t - at >= opts.windowMs)) hits.delete(k)
+      return true
+    },
+  }
+}
