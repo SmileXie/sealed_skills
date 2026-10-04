@@ -339,6 +339,12 @@ export function createSealedMarkerObserver(deps: SealedMarkerObserverDeps): Seal
 
 export interface SealedPlaintextReveal {
   readonly reveal: NonNullable<LogMaskDeps['reveal']>
+  /**
+   * Whether `text` occurs inside any cached body. Reads the SAME per-entry buffers as `reveal`
+   * (no second copy of any body) and returns only a boolean — it never hands plaintext back.
+   * This is the `isPlaintext` source for the Task 6 runtime sentinel.
+   */
+  contains(text: string): boolean
   save(entryId: string, content: string): void
   dispose(): void
 }
@@ -349,6 +355,13 @@ export function createPlaintextReveal(): SealedPlaintextReveal {
     reveal(entryId) {
       const buffer = buffers.get(entryId)
       return buffer === undefined ? undefined : buffer.toString('utf8')
+    },
+    contains(text) {
+      if (typeof text !== 'string' || text.length === 0) return false
+      for (const buffer of buffers.values()) {
+        if (buffer.includes(text)) return true
+      }
+      return false
     },
     save(entryId, content) {
       if (typeof entryId !== 'string' || entryId.length === 0) return

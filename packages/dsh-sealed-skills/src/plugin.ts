@@ -24,6 +24,12 @@ import {
   type SealedSessionEventLike,
   type SealedSessionLike,
 } from './log-mask.js'
+import {
+  createSealedPlaintextInvariant,
+  installSealedInvariant,
+  type InvariantInstaller,
+  type InvariantRegistry,
+} from './invariant.js'
 
 /**
  * dsh entrypoint for the `dsh-sealed-skills` bundle.
@@ -105,12 +111,22 @@ export interface SkillsContext {
     name: 'session/event',
     listener: (session: SealedSessionLike, event: SealedSessionEventLike) => void,
   ) => () => void
+  /**
+   * Runtime-invariant seam (Task 6). Optional: when absent the sealed-plaintext sentinel is
+   * skipped with a redacted warning — it must NEVER gate the skill provider (unlike the log-mask).
+   */
+  readonly invariants?: InvariantRegistry
+  /**
+   * cordis effect scope. When present the sentinel registration is owned by the plugin fiber
+   * (disposed with it); when absent `apply` keeps the disposer and tears it down itself.
+   */
+  readonly effect?: (callback: () => (() => void) | void, label?: string) => (() => void) | void
   /** Optional redacted-failure sink; falls back to `console.warn`. */
   readonly logger?: { warn(message: string): void }
 }
 
 export const name = 'sealed-skills'
-export const inject = ['skills', 'sessions']
+export const inject = ['skills', 'sessions', 'invariants']
 
 /**
  * Register the sealed provider on `ctx.skills` during plugin apply and return the dsh
@@ -228,6 +244,37 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () =
   let disposeProjection: (() => Promise<void>) | undefined
   let disposeListener: (() => void) | undefined
   let ready = false
+  let disposeInvariant: (() => void) | undefined
+
+  const warn = (message: string): void => {
+    if (ctx.logger !== undefined && typeof ctx.logger.warn === 'function') ctx.logger.warn(message)
+    else console.warn(message)
+  }
+
+  // Task 6 sentinel: registered only AFTER the log-mask is ready, and never allowed to affect the
+  // gate. `isPlaintext` reads Task 5's cache in place (no second copy of any body). Absence of
+  // `ctx.invariants`, a filtered registration, or an "already registered" reload all degrade to a
+  // redacted warning / no-op disposer -- they must NOT stop the skill provider from serving.
+  const registerSealedInvariantSentinel = (): void => {
+    let installer: InvariantInstaller
+    try {
+      installer = createSealedPlaintextInvariant({ isPlaintext: (text) => plaintext.contains(text) })
+    } catch {
+      warn('[sealed-skills] the sealed-plaintext sentinel could not be constructed')
+      return
+    }
+    const register = (): (() => void) => installSealedInvariant(ctx.invariants, installer, warn)
+    const effect = ctx.effect
+    if (typeof effect === 'function') {
+      try {
+        effect(register, 'sealed.invariant')
+        return
+      } catch {
+        // Fall through: keep the disposer ourselves so a missing/broken effect cannot lose it.
+      }
+    }
+    disposeInvariant = register()
+  }
 
   const readiness: Promise<void> = (async () => {
     const registerType = config.registerSessionEventType
@@ -245,6 +292,11 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () =
     disposeListener = on('session/event', (session, event) => observer.onSessionEvent(session, event))
     assertLogMaskReady({ projection, reveal: plaintext.reveal })
     ready = true
+    try {
+      registerSealedInvariantSentinel()
+    } catch {
+      // Defense-in-depth only: a sentinel wiring failure must never close the fail-closed gate.
+    }
   })()
 
   // Never let a readiness failure surface as an unhandled rejection; make it visible (redacted).
@@ -312,6 +364,11 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () =
       void disposeProjection?.()
     } catch {
       // Best-effort teardown.
+    }
+    try {
+      disposeInvariant?.()
+    } catch {
+      // Best-effort teardown (only set when ctx.effect was unavailable).
     }
     plaintext.dispose()
     registry.clear()
