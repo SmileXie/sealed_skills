@@ -37,6 +37,18 @@ describe('parseSkillMarkdown', () => {
   it('rejects a file without frontmatter', () => {
     expect(() => parseSkillMarkdown('no frontmatter')).toThrow('SKILL_MD_NO_FRONTMATTER')
   })
+
+  it('parses CRLF-authored frontmatter', () => {
+    const parsed = parseSkillMarkdown('---\r\nname: x\r\ndescription: y\r\n---\r\nbody\r\n')
+    expect(parsed.frontmatter).toEqual({ name: 'x', description: 'y' })
+    expect(parsed.body).toBe('body\n')
+  })
+
+  it('parses a UTF-8 BOM-prefixed file with LF endings', () => {
+    const parsed = parseSkillMarkdown('\uFEFF---\nname: x\ndescription: y\n---\nbody\n')
+    expect(parsed.frontmatter).toEqual({ name: 'x', description: 'y' })
+    expect(parsed.body).toBe('body\n')
+  })
 })
 
 describe('assertSafeRelPath', () => {
@@ -108,5 +120,25 @@ describe('packSkillDir', () => {
     const info = inspectPack(packSkillDir(goodDir(), base).file, author.publicKey)
     expect(info.signatureValid).toBe(true)
     expect(info.chunks).toBe(5)
+  })
+
+  it('encrypts a meta entry describing the skill for the runtime', () => {
+    const parsed = readContainer(packSkillDir(goodDir(), base).file)
+    const chunk = parsed.chunks.find((c) => c.id === 'meta')!
+    const ck = deriveEntryKey(master, base.packId, base.version, 'meta')
+    let metaText: string
+    try {
+      metaText = openEntry(ck, entryAad(base.packId, base.version, 'meta'), chunk.nonce, chunk.ct).toString('utf8')
+    } finally {
+      ck.fill(0)
+    }
+    const meta = JSON.parse(metaText)
+    expect(meta.skills[0].name).toBe('translate')
+    expect(meta.skills[0].description).toBe('翻译文本')
+    expect(meta.skills[0].whenToUse).toBe('需要翻译时')
+    expect(meta.skills[0].invocation).toEqual({ modelInvocable: true, userInvocable: true })
+    expect(meta.resources).toEqual({ 'skill:translate:res:logo.png': 'logo.png' })
+    expect(meta.skills[0].entries).toContain('skill:translate:body')
+    expect(meta.skills[0].entries).toContain('script:translate:run.py')
   })
 })

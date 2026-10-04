@@ -29,7 +29,8 @@ describe('makeTrialLicense', () => {
 
     const ck = deriveEntryKey(master, 'com.example.t', '1.0.0', 'meta')
     expect(unwrapEntryKey(payload, 'meta', device.privateKey).equals(ck)).toBe(true)
-    expect(() => unwrapEntryKey(payload, 'script:translate:scripts/run.py', device.privateKey)).toThrow('LICENSE_NO_GRANT')
+    expect(readContainer(file).manifest.entries.map((e) => e.id)).toContain('script:translate:run.py')
+    expect(() => unwrapEntryKey(payload, 'script:translate:run.py', device.privateKey)).toThrow('LICENSE_NO_GRANT')
     expect(readContainer(file).manifest.entries.length).toBe(3)
   })
 

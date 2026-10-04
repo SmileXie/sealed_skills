@@ -1,9 +1,10 @@
 export function parseSkillMarkdown(text: string): { frontmatter: Record<string, string | boolean>; body: string } {
-  if (!text.startsWith('---\n')) throw new Error('SKILL_MD_NO_FRONTMATTER')
-  const end = text.indexOf('\n---', 3)
+  const src = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+  if (!src.startsWith('---\n')) throw new Error('SKILL_MD_NO_FRONTMATTER')
+  const end = src.indexOf('\n---', 3)
   if (end < 0) throw new Error('SKILL_MD_NO_FRONTMATTER')
-  const block = text.slice(4, end)
-  const body = text.slice(end + 4).replace(/^(?:\r?\n)+/, '')
+  const block = src.slice(4, end)
+  const body = src.slice(end + 4).replace(/^(?:\r?\n)+/, '')
   const frontmatter: Record<string, string | boolean> = {}
   for (const line of block.split('\n')) {
     const trimmed = line.trim()
