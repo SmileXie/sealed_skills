@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto'
+import { createPublicKey, generateKeyPairSync } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { deriveEntryKey, entryAad, openEntry, sealEntry } from '@sealed/pack-format'
 import {
@@ -9,7 +9,7 @@ import {
   verifyLicense,
   x25519PrivateFromRaw,
 } from '@sealed/license-format'
-import { ServerError, issueLicense, loadServerKeys, unwrapMaster, wrapMaster, type PackRecord } from '../src/index.js'
+import { ServerError, issueLicense, loadServerKeys, serverLicensePublicB64, unwrapMaster, wrapMaster, type PackRecord } from '../src/index.js'
 
 function testEnv() {
   const licenseKey = generateKeyPairSync('ed25519')
@@ -18,6 +18,7 @@ function testEnv() {
   const proofRaw = proof.privateKey.export({ format: 'jwk' }) as { d: string }
   return {
     licenseKey,
+    proofKey: proof,
     env: {
       SEALED_SERVER_LICENSE_KEY: license.d,
       SEALED_SERVER_PROOF_KEY: proofRaw.d,
@@ -34,11 +35,13 @@ const pack: PackRecord = {
 
 describe('server keys and master wrapping', () => {
   it('loads keys from the environment and derives the proof public key', () => {
-    const { env: e } = testEnv()
+    const { licenseKey, proofKey, env: e } = testEnv()
     const keys = loadServerKeys(e)
     expect(keys.masterWrapKey.length).toBe(32)
     expect(keys.proofPrivateKey.length).toBe(32)
     expect(keys.proofPublicB64).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(serverLicensePublicB64(keys)).toBe(b64u(rawPublicBytesOf(licenseKey.publicKey)))
+    expect(keys.proofPublicB64).toBe(b64u(rawPublicBytesOf(proofKey.publicKey)))
   })
 
   it('rejects a missing or malformed key', () => {
@@ -80,6 +83,7 @@ describe('issueLicense', () => {
     expect(payload.exp).toBe(1_700_000_000 + 604800)
     expect(payload.grace_until).toBe(1_700_000_000 + 604800 + 259200)
     expect(payload.keys.map((k) => k.eid).sort()).toEqual(['data:x', 'meta', 'skill:translate:body'])
+    expect(verifyLicense(token, [createPublicKey(keys.licensePrivateKey)]).lid).toBe('lic_1')
   })
 
   it('grants only the entries the filter allows and unwraps to the real content key', () => {
@@ -92,7 +96,7 @@ describe('issueLicense', () => {
       licenseId: 'lic_t', sub: 'trial', pack, devicePubB64, caps: ['trial'], plan: 'trial', seatLimit: 1, now: 100,
       entryFilter: (id) => id === 'meta',
     }, master, keys.licensePrivateKey)
-    const payload = verifyLicense(token, [keys.licensePrivateKey])
+    const payload = verifyLicense(token, [createPublicKey(keys.licensePrivateKey)])
     expect(payload.keys.map((k) => k.eid)).toEqual(['meta'])
     const ck = unwrapEntryKey(payload, 'meta', x25519PrivateFromRaw(rawPrivateBytesOf(device.privateKey)))
     expect(ck.equals(deriveEntryKey(master, pack.packId, pack.version, 'meta'))).toBe(true)

@@ -6,6 +6,7 @@ const NONCE_BYTES = 12
 
 /** master key 静态加密：`v1.<b64u nonce>.<b64u ciphertext||tag>`。 */
 export function wrapMaster(master: Buffer, masterWrapKey: Buffer): string {
+  if (masterWrapKey.length !== 32) throw new ServerError('INTERNAL', 'master wrap key must be 32 bytes')
   const nonce = randomBytes(NONCE_BYTES)
   const cipher = createCipheriv('aes-256-gcm', masterWrapKey, nonce)
   const ct = Buffer.concat([cipher.update(master), cipher.final(), cipher.getAuthTag()])
@@ -13,6 +14,7 @@ export function wrapMaster(master: Buffer, masterWrapKey: Buffer): string {
 }
 
 export function unwrapMaster(wrapped: string, masterWrapKey: Buffer): Buffer {
+  if (masterWrapKey.length !== 32) throw new ServerError('INTERNAL', 'master wrap key must be 32 bytes')
   const parts = wrapped.split('.')
   if (parts.length !== 3 || parts[0] !== 'v1') throw new ServerError('INTERNAL', 'stored master key is malformed')
   const nonce = unb64u(parts[1])
