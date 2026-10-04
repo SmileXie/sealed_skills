@@ -19,7 +19,7 @@ export interface Keystore {
   loadDevicePublicKey(): Promise<Buffer | undefined>
   createDeviceKey(): Promise<void>
   deleteDeviceKey(): Promise<void>
-  ecdh(peerPublic: Buffer): Promise<Buffer>
+  ecdh?(peerPublic: Buffer): Promise<Buffer>
 }
 
 const KEY_FILE = 'device.json'
@@ -54,7 +54,7 @@ export class FileKeystore implements Keystore {
     } catch {
       throw new KeystoreError('device key file is not valid JSON')
     }
-    if (typeof parsed.priv !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(parsed.priv)) {
+    if (parsed === null || typeof parsed !== 'object' || typeof parsed.priv !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(parsed.priv)) {
       throw new KeystoreError('device key file has an invalid private key')
     }
     return Buffer.from(parsed.priv, 'base64url')

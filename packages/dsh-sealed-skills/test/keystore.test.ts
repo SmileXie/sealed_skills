@@ -54,6 +54,13 @@ describe('FileKeystore', () => {
     await expect(ks.loadDevicePrivateKey()).rejects.toThrow(KeystoreError)
   })
 
+  it('rejects a literal null key file with a typed error, not a TypeError', async () => {
+    const ks = fresh()
+    await ks.createDeviceKey()
+    writeFileSync(join(ks.dir, 'device.json'), 'null')
+    await expect(ks.loadDevicePrivateKey()).rejects.toBeInstanceOf(KeystoreError)
+    await expect(ks.loadDevicePrivateKey()).rejects.not.toBeInstanceOf(TypeError)
+  })
   it('derives the same shared secret from both sides via ecdh', async () => {
     const a = fresh(); const b = fresh()
     await a.createDeviceKey(); await b.createDeviceKey()
