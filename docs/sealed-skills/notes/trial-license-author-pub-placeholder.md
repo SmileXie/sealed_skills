@@ -1,5 +1,9 @@
 # M1 temporary convention: `pack.author_pub` holds the device public key
 
+> **SUPERSEDED (M2):** The placeholder no longer exists. Both the license server and the
+> local `seal trial` path now put the real author Ed25519 public key in `pack.author_pub`,
+> and `SealedCore` verifies the manifest with that key. This note is kept only for history.
+
 ## What the placeholder is
 
 In M1, the local trial license issued by `@sealed/seal-cli` (`makeTrialLicense`) sets

@@ -51,7 +51,7 @@ describe('sealed-skills plugin', () => {
     const dir = freshKeystoreDir()
     const { ctx, provider } = fakeContext()
     apply(ctx, {
-      mounts: [{ packPath: join(dir, 'missing.sealedpack'), licensePath: join(dir, 'missing.license'), authorPublicKeyB64: 'x' }],
+      mounts: [{ packPath: join(dir, 'missing.sealedpack'), licensePath: join(dir, 'missing.license') }],
       trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir(),
     })
     await expect(provider().list({})).resolves.toEqual([])
@@ -65,7 +65,7 @@ describe('sealed-skills plugin', () => {
     writeFileSync(licensePath, '{}')
     const { ctx, provider } = fakeContext()
     apply(ctx, {
-      mounts: [{ packPath, licensePath, authorPublicKeyB64: 'x' }],
+      mounts: [{ packPath, licensePath }],
       trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir(),
     })
     await expect(provider().list({})).resolves.toEqual([])

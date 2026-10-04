@@ -78,7 +78,7 @@ describe('SealedCore', () => {
   it('lists and reads a granted skill without exposing any file path', async () => {
     const ks = await newKeystore()
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -92,7 +92,7 @@ describe('SealedCore', () => {
   it('refuses an entry the license does not grant', async () => {
     const ks = await newKeystore()
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -102,7 +102,7 @@ describe('SealedCore', () => {
   it('refuses an expired license before touching the pack', async () => {
     const ks = await newKeystore()
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body'], { exp: 100, grace_until: 200 }),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -113,21 +113,21 @@ describe('SealedCore', () => {
     const ks = await newKeystore()
     const now = 150_000
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body'], { exp: 100, grace_until: 200 }),
       trustedLicenseKeys: [author.publicKey], keystore: ks, now: () => now,
     })
     expect((await core.readSkill('translate')).content).toContain('翻译')
   })
 
-  it('rejects a pack signed by a different author key', async () => {
+  it('verifies the manifest with the author_pub carried by the license, rejecting a mismatch', async () => {
     const ks = await newKeystore()
-    const other = generateKeyPairSync('ed25519')
-    expect(() => new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(other.publicKey),
-      license: licenseFor(Buffer.alloc(32, 1), ['meta']),
-      trustedLicenseKeys: [author.publicKey], keystore: ks,
-    })).toThrowError(expect.objectContaining({ code: 'PACK_SIGNATURE' }))
+    const otherAuthor = generateKeyPairSync('ed25519')
+    const license = licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body'], {
+      pack: { id: packId, version, author_pub: ed25519RawX(otherAuthor.publicKey) },
+    })
+    expect(() => new SealedCore({ pack, license, trustedLicenseKeys: [author.publicKey], keystore: ks }))
+      .toThrowError(expect.objectContaining({ code: 'PACK_SIGNATURE' }))
   })
 
   it('rejects a tampered chunk as a typed decrypt failure', async () => {
@@ -136,7 +136,7 @@ describe('SealedCore', () => {
     const idx = tampered.length - 5
     tampered[idx] = tampered[idx] ^ 0xff
     const core = new SealedCore({
-      pack: tampered, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack: tampered,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -146,7 +146,7 @@ describe('SealedCore', () => {
   it('rejects an unknown skill name with META_INVALID', async () => {
     const ks = await newKeystore()
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -157,7 +157,7 @@ describe('SealedCore', () => {
     const ks = await newKeystore()
     const badPack = buildPack([{ id: 'meta', type: 'meta', body: '{ not json' }])
     const core = new SealedCore({
-      pack: badPack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack: badPack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -168,7 +168,7 @@ describe('SealedCore', () => {
     const ks = await newKeystore()
     const badPack = buildPack([{ id: 'meta', type: 'meta', body: JSON.stringify({ skills: 'nope', resources: {} }) }])
     const core = new SealedCore({
-      pack: badPack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack: badPack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -180,7 +180,7 @@ describe('SealedCore', () => {
     const body = JSON.stringify({ skills: [{ name: 'translate', description: 'd', invocation: { modelInvocable: true, userInvocable: true } }], resources: {} })
     const badPack = buildPack([{ id: 'meta', type: 'meta', body }])
     const core = new SealedCore({
-      pack: badPack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack: badPack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -192,7 +192,7 @@ describe('SealedCore', () => {
     const ks = await newKeystore()
     const badPack = buildPack([{ id: 'meta', type: 'meta', body: JSON.stringify({ skills: [null], resources: {} }) }])
     const core = new SealedCore({
-      pack: badPack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack: badPack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -204,7 +204,7 @@ describe('SealedCore', () => {
     const license = licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body'])
     writeFileSync(join(ks.dir, 'device.json'), '{ not json', 'utf8')
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license, trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
     await expect(core.readSkill('translate')).rejects.toMatchObject({ code: 'LICENSE_INVALID' })
@@ -215,7 +215,7 @@ describe('SealedCore', () => {
     const foreign = generateKeyPairSync('x25519')
     const foreignPub = (foreign.publicKey.export({ format: 'jwk' }) as { x: string }).x
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license: licenseFor(Buffer.from(foreignPub, 'base64url'), ['meta', 'skill:translate:body']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -226,7 +226,7 @@ describe('SealedCore', () => {
   it('zeroizes the decrypted body buffer after readSkill', async () => {
     const ks = await newKeystore()
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
@@ -242,7 +242,7 @@ describe('SealedCore', () => {
   it('zeroizes the decrypted meta buffer after list()', async () => {
     const ks = await newKeystore()
     const core = new SealedCore({
-      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      pack,
       license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body']),
       trustedLicenseKeys: [author.publicKey], keystore: ks,
     })

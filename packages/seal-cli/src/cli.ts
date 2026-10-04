@@ -29,7 +29,7 @@ export const USAGE = [
   '  seal keygen [-o author.key.json]',
   '  seal pack <dir> -o <out.sealedpack> --pack-id <id> --version <v> --label <l> --key <author.key.json> [--trial <id,id>]',
   '  seal inspect <pack> [--author-pub <b64url>]',
-  '  seal trial <pack> --master <x.master.json> --device-pub <b64url> --days <n> --key <author.key.json> [-o <out.license>]',
+  '  seal trial <pack> --master <x.master.json> --device-pub <b64url> --days <n> --key <author.key.json> [-o <out.license>]   # local trial; the author key is the license signer',
   '',
 ].join('\n')
 

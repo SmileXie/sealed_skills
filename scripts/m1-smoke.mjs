@@ -36,7 +36,6 @@ writeFileSync(licensePath, license, 'utf8')
 
 const core = new SealedCore({
   pack: readFileSync(packPath),
-  authorPublicKeyB64: author.publicKey.export({ format: 'jwk' }).x,
   license: readFileSync(licensePath, 'utf8'),
   trustedLicenseKeys: [author.publicKey],
   keystore,

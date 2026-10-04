@@ -45,22 +45,30 @@ export class SealedCore {
 
   constructor(private readonly opts: {
     pack: Buffer
-    authorPublicKeyB64: string
     license: string
     trustedLicenseKeys: KeyObject[]
     keystore: Keystore
     now?: () => number
   }) {
     this.parsed = readContainer(opts.pack)
-    const authorKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: opts.authorPublicKeyB64 }, format: 'jwk' })
-    if (!verifyManifestSignature(this.parsed.manifestBytes, this.parsed.signature, authorKey)) {
-      throw new SealedError('PACK_SIGNATURE', 'pack manifest signature does not match the trusted author key')
-    }
     this.payload = verifyLicense(opts.license, opts.trustedLicenseKeys)
     if (this.payload.pack.id !== this.parsed.manifest.pack_id || this.payload.pack.version !== this.parsed.manifest.version) {
       throw new SealedError('LICENSE_INVALID', 'license is for a different pack or version')
     }
+    // Review Focus 6: the author key may only come from the signed license, never from the caller.
+    let authorKey: KeyObject
+    try {
+      authorKey = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: this.payload.pack.author_pub }, format: 'jwk' })
+    } catch {
+      throw new SealedError('PACK_SIGNATURE', 'license carries an unusable author public key')
+    }
+    if (!verifyManifestSignature(this.parsed.manifestBytes, this.parsed.signature, authorKey)) {
+      throw new SealedError('PACK_SIGNATURE', 'pack manifest signature does not match the author key in the license')
+    }
   }
+
+  /** Validated license payload (read-only), so callers can inspect the entitlement state. */
+  get licensePayload(): LicensePayload { return this.payload }
 
   async list(): Promise<SkillSummary[]> {
     const meta = await this.loadMeta()

@@ -1,4 +1,4 @@
-import { randomBytes, type KeyObject } from 'node:crypto'
+import { createPublicKey, randomBytes, type KeyObject } from 'node:crypto'
 import { deriveEntryKey, type PackManifest } from '@sealed/pack-format'
 import { rawPublicBytes, signLicense, wrapEntryKey, type LicensePayload } from '@sealed/license-format'
 
@@ -14,11 +14,12 @@ export function makeTrialLicense(opts: {
 }): string {
   const now = Math.floor((opts.now ?? Date.now()) / 1000)
   const devicePub = rawPublicBytes(opts.devicePublicKey).toString('base64url')
+  const authorPub = rawPublicBytes(createPublicKey(opts.signingKey)).toString('base64url')
   const payload: LicensePayload = {
     v: 1,
     lid: opts.lid ?? 'lic_trial_' + now + '_' + randomBytes(4).toString('hex'),
     sub: 'trial',
-    pack: { id: opts.manifest.pack_id, version: opts.manifest.version, author_pub: devicePub },
+    pack: { id: opts.manifest.pack_id, version: opts.manifest.version, author_pub: authorPub },
     dev: devicePub,
     iat: now,
     exp: now + opts.days * 86400,
