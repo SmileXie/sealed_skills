@@ -5,3 +5,4 @@ dist/
 *.sealedpack
 *.master.json
 *.license
+*.key.json
