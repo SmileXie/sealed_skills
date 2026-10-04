@@ -1,5 +1,7 @@
 export * from './keystore.js'
 export * from './core.js'
+export * from './session-events.js'
+export * from './log-mask.js'
 export * from './provider.js'
 export * from './registry.js'
 export * from './plugin.js'

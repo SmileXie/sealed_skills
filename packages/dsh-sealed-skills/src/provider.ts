@@ -1,4 +1,9 @@
 import type { SealedCore, SkillDefinition, SkillSummary } from './core.js'
+import {
+  renderPlaceholder,
+  SEALED_REDACTED_ALG,
+  type SealedPlaceholderRegistry,
+} from './session-events.js'
 
 /**
  * M1 core-facing seam: the minimal provider surface the smoke path and tests consume.
@@ -9,6 +14,35 @@ export interface SkillProviderLike {
   readonly name: string
   list(): Promise<SkillSummary[]>
   get(name: string): Promise<SkillDefinition | undefined>
+}
+
+/**
+ * Content hook for the dsh adapter. The default is identity (`realContent`), which is what the
+ * M1/M2 tests and today's behavior depend on. Task 5 injects a redacting hook so the provider
+ * returns an unguessable placeholder instead of the plaintext body.
+ */
+export type SealedContentFor = (name: string, entryId: string, realContent: string) => string
+
+/** The entry id `SealedCore.readSkill` reads a body from — kept in lockstep with core.ts. */
+export function skillBodyEntryId(name: string): string {
+  return 'skill:' + name + ':body'
+}
+
+/**
+ * Compose the placeholder renderer with the shared registry so Task 5 can inject a single
+ * `contentFor`. Rendered tokens are recorded for the marker-append path; the plaintext is
+ * deliberately dropped and never leaves this function.
+ */
+export function createPlaceholderContentFor(
+  registry: SealedPlaceholderRegistry,
+  opts: { alg?: string } = {},
+): SealedContentFor {
+  const alg = opts.alg ?? SEALED_REDACTED_ALG
+  return (_name, entryId) => {
+    const placeholder = renderPlaceholder(entryId)
+    registry.record(placeholder.token, { entryId, alg })
+    return placeholder.text
+  }
 }
 
 export function createSkillProvider(core: Pick<SealedCore, 'list' | 'readSkill'>): SkillProviderLike {
@@ -128,9 +162,11 @@ export function createDshSkillProvider(core: Pick<SealedCore, 'list' | 'readSkil
   rank?: number
   source?: string
   signal?: AbortSignal
+  contentFor?: SealedContentFor
 } = {}): DshSkillProvider {
   const rank = opts.rank ?? 600
   const source = opts.source ?? 'custom'
+  const contentFor: SealedContentFor = opts.contentFor ?? ((_name, _entryId, realContent) => realContent)
   const aborted = (options: DshSkillLookupOptions) => Boolean(opts.signal?.aborted || options.signal?.aborted)
   return {
     name: 'sealed',
@@ -160,6 +196,7 @@ export function createDshSkillProvider(core: Pick<SealedCore, 'list' | 'readSkil
       if (skillName === undefined) return undefined
       try {
         const skill = await core.readSkill(skillName)
+        const entryId = skillBodyEntryId(skill.name)
         return {
           name: skill.name,
           description: skill.description,
@@ -167,7 +204,7 @@ export function createDshSkillProvider(core: Pick<SealedCore, 'list' | 'readSkil
           invocation: skill.invocation,
           source,
           provider: 'sealed',
-          content: skill.content,
+          content: contentFor(skill.name, entryId, skill.content),
         }
       } catch {
         return undefined
