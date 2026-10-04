@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   deviceProofKey, deviceProofMac, deviceProofMessage, isRawX25519Pub,
   parseErrorEnvelope, validateActivateRequest, validateRenewRequest, validateTrialRequest,
-  rawPublicBytes, x25519PrivateFromRaw, x25519PublicFromRaw, ProtocolRequestError,
+  validateRevokeRequest, rawPublicBytes, x25519PrivateFromRaw, x25519PublicFromRaw, ProtocolRequestError,
 } from '../src/index.js'
 
 describe('protocol validators', () => {
@@ -52,5 +52,15 @@ describe('helpers', () => {
     expect(parseErrorEnvelope({ error: { code: 'REPLAY', message: 'x' } })).toEqual({ code: 'REPLAY', message: 'x' })
     expect(parseErrorEnvelope({ error: { code: 'NOPE' } })).toBeUndefined()
     expect(parseErrorEnvelope('boom')).toBeUndefined()
+  })
+})
+
+describe('validateRevokeRequest', () => {
+  it('accepts each identifier and rejects an empty request', () => {
+    expect(validateRevokeRequest({ license_id: 'lic_x' })).toEqual({ license_id: 'lic_x' })
+    expect(validateRevokeRequest({ device_pub: 'A'.repeat(43) })).toEqual({ device_pub: 'A'.repeat(43) })
+    expect(validateRevokeRequest({ seat: 'lic_y' })).toEqual({ seat: 'lic_y' })
+    expect(() => validateRevokeRequest({})).toThrowError(/at least one/)
+    expect(() => validateRevokeRequest({ license_id: 7 })).toThrowError(/license_id/)
   })
 })

@@ -1,13 +1,15 @@
-import { randomBytes } from 'node:crypto'
+import { diffieHellman, randomBytes, timingSafeEqual } from 'node:crypto'
 import {
-  LICENSE_TTL_SECONDS, LICENSE_GRACE_SECONDS, validateActivateRequest, validateTrialRequest,
-  type ProtocolErrorCode,
+  LICENSE_TTL_SECONDS, LICENSE_GRACE_SECONDS, MAX_CLOCK_SKEW_SECONDS, NONCE_TTL_SECONDS,
+  deviceProofKey, deviceProofMac, deviceProofMessage, unb64u,
+  validateActivateRequest, validateRenewRequest, validateRevokeRequest, validateTrialRequest,
+  x25519PrivateFromRaw, x25519PublicFromRaw,
 } from '@sealed/license-format'
 import { issueLicense } from './issue.js'
 import { unwrapMaster } from './master-store.js'
 import { HttpError } from './http.js'
 import type { ServerKeys } from './keys.js'
-import type { Store } from './store.js'
+import type { LicenseRecord, Store } from './store.js'
 
 export function generateLicenseId(prefix: string, now: number): string {
   return 'lic_' + prefix + '_' + now + '_' + randomBytes(4).toString('hex')
@@ -89,4 +91,71 @@ export function handleActivate(store: Store, keys: ServerKeys, body: unknown, no
   })
   store.appendAudit({ at: now, action: 'activate', actor: 'client', subject: licenseId, detail: pack.packId + '@' + pack.version })
   return { status: 200, body: { license: token } }
+}
+
+function verifyDeviceProof(keys: ServerKeys, request: { license_id: string; device_pub: string; nonce: string; ts: number; mac: string }): void {
+  let shared: Buffer
+  try {
+    shared = diffieHellman({
+      privateKey: x25519PrivateFromRaw(keys.proofPrivateKey),
+      publicKey: x25519PublicFromRaw(unb64u(request.device_pub)),
+    })
+  } catch {
+    throw new HttpError(401, 'BAD_DEVICE_PROOF', 'device public key is not usable')
+  }
+  const expected = Buffer.from(deviceProofMac(deviceProofKey(shared, request.license_id), deviceProofMessage(request.license_id, request.nonce, request.ts)), 'base64url')
+  const provided = Buffer.from(request.mac, 'base64url')
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+    throw new HttpError(401, 'BAD_DEVICE_PROOF', 'device proof is not valid')
+  }
+}
+
+export function handleRenew(store: Store, keys: ServerKeys, body: unknown, now: number): RouteResult {
+  const request = validateRenewRequest(body)
+  const record = store.getLicense(request.license_id)
+  if (!record) throw new HttpError(404, 'UNKNOWN_LICENSE', 'unknown license')
+  if (record.revoked) throw new HttpError(403, 'REVOKED', 'this license has been revoked')
+  if (record.devicePub !== request.device_pub) throw new HttpError(401, 'BAD_DEVICE_PROOF', 'device proof does not match the license')
+  if (Math.abs(now - request.ts) > MAX_CLOCK_SKEW_SECONDS) throw new HttpError(400, 'BAD_REQUEST', 'timestamp is outside the allowed clock skew window')
+  verifyDeviceProof(keys, request)
+  if (!store.insertNonce(request.license_id, request.nonce, now)) throw new HttpError(409, 'REPLAY', 'this nonce was already used')
+  store.pruneNonces(0, now - NONCE_TTL_SECONDS)
+  const pack = requirePack(store, record.packId, record.version)
+  const master = unwrapPackMaster(store, keys, pack.packId, pack.version)
+  let token: string
+  try {
+    token = issueLicense({
+      licenseId: record.licenseId, sub: record.sub, pack, devicePubB64: record.devicePub,
+      caps: record.caps as ('trial' | 'full')[], plan: record.plan, seatLimit: record.seatLimit, now,
+    }, master, keys.licensePrivateKey)
+  } finally {
+    master.fill(0)
+  }
+  store.putLicense({
+    ...record, iat: now, exp: now + LICENSE_TTL_SECONDS, graceUntil: now + LICENSE_TTL_SECONDS + LICENSE_GRACE_SECONDS,
+  })
+  store.appendAudit({ at: now, action: 'renew', actor: 'client', subject: record.licenseId, detail: record.packId + '@' + record.version })
+  return { status: 200, body: { license: token } }
+}
+
+export function handleRevoke(store: Store, body: unknown, now: number): RouteResult {
+  const request = validateRevokeRequest(body)
+  const targets: LicenseRecord[] = []
+  if (request.license_id) {
+    const record = store.getLicense(request.license_id)
+    if (record) targets.push(record)
+  } else if (request.device_pub) {
+    targets.push(...store.getLicensesForDevice(request.device_pub))
+  } else if (request.seat) {
+    const record = store.getLicense(request.seat)
+    if (record) targets.push(record)
+  }
+  if (targets.length === 0) throw new HttpError(404, 'UNKNOWN_LICENSE', 'no license matched the revoke request')
+  let revoked = 0
+  for (const record of targets) {
+    if (!record.revoked && store.markRevoked(record.licenseId)) revoked++
+    store.deleteSeat(record.sub, record.packId, record.version, record.devicePub)
+    store.appendAudit({ at: now, action: 'revoke', actor: 'admin', subject: record.licenseId, detail: record.packId + '@' + record.version })
+  }
+  return { status: 200, body: { revoked } }
 }

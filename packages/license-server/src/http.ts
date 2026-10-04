@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ProtocolErrorCode } from '@sealed/license-format'
 
@@ -38,4 +39,14 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
 
 export function sendError(res: ServerResponse, status: number, code: ProtocolErrorCode, message: string): void {
   sendJson(res, status, { error: { code, message } })
+}
+
+/** Constant-time comparison of `Authorization: Bearer <adminToken>`; missing or mismatched returns false. */
+export function isAuthorized(req: IncomingMessage, adminToken: string): boolean {
+  const header = req.headers.authorization
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) return false
+  const provided = Buffer.from(header.slice('Bearer '.length), 'utf8')
+  const expected = Buffer.from(adminToken, 'utf8')
+  if (provided.length !== expected.length) return false
+  return timingSafeEqual(provided, expected)
 }

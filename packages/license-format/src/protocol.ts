@@ -112,6 +112,18 @@ export function validateRenewRequest(value: unknown): RenewRequest {
   }
 }
 
+export function validateRevokeRequest(value: unknown): RevokeRequest {
+  const record = requireObject(value, 'revoke request')
+  const request: RevokeRequest = {}
+  if (record.license_id !== undefined) request.license_id = requireString(record.license_id, 'license_id')
+  if (record.device_pub !== undefined) request.device_pub = requireString(record.device_pub, 'device_pub')
+  if (record.seat !== undefined) request.seat = requireString(record.seat, 'seat')
+  if (!request.license_id && !request.device_pub && !request.seat) {
+    bad('revoke request needs at least one of license_id, device_pub or seat')
+  }
+  return request
+}
+
 export function validatePublishPackRequest(value: unknown): PublishPackRequest {
   const obj = requireObject(value, 'publish request')
   if (typeof obj.author_pub !== 'string' || !isRawEd25519Pub(obj.author_pub)) bad('author_pub must be 32 raw bytes encoded as base64url')

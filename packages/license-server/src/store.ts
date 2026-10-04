@@ -140,6 +140,11 @@ export class Store {
     return row ? this.toLicense(row) : undefined
   }
 
+  getLicensesForDevice(devicePub: string): LicenseRecord[] {
+    const rows = this.db.prepare('SELECT * FROM licenses WHERE device_pub = ? ORDER BY iat').all(devicePub) as unknown as LicenseDbRow[]
+    return rows.map((row) => this.toLicense(row))
+  }
+
   markRevoked(licenseId: string): boolean {
     const result = this.db.prepare('UPDATE licenses SET revoked = 1 WHERE license_id = ?').run(licenseId)
     return Number(result.changes) > 0
