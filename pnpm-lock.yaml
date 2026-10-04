@@ -40,6 +40,15 @@ importers:
 
   packages/pack-format: {}
 
+  packages/seal-cli:
+    dependencies:
+      '@sealed/license-format':
+        specifier: workspace:*
+        version: link:../license-format
+      '@sealed/pack-format':
+        specifier: workspace:*
+        version: link:../pack-format
+
 packages:
 
   '@esbuild/aix-ppc64@0.21.5':
