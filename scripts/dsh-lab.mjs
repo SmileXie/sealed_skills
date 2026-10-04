@@ -34,7 +34,14 @@ export const LAB_DIR = join(REPO_ROOT, '.dsh-lab')
 export const DSH_HOME = join(LAB_DIR, 'home')
 /** SEALED_HOME for the mounted plugin, so its keystore stays inside `.dsh-lab/`. */
 export const SEALED_HOME = join(LAB_DIR, 'sealed')
-export const PROFILE_NAME = 'm3-lab'
+/**
+ * Profile name. A single shared profile is the default, but `SEALED_DSH_LAB_PROFILE_NAME` lets a
+ * caller isolate the generated profile per invocation. The gated lab tests run under vitest file
+ * parallelism and each regenerates the profile, so a shared directory made two writers rewrite the
+ * same `cordis.patch.yml` — an intermittent false-RED. The override gives each writer its own
+ * profile directory; the shared dsh install under `LAB_DIR` is only ever read from here.
+ */
+export const PROFILE_NAME = process.env.SEALED_DSH_LAB_PROFILE_NAME || 'm3-lab'
 export const PROFILE_DIR = join(DSH_HOME, 'profiles', PROFILE_NAME)
 /** Bundle shim name (a generated wrapper; our real package does not ship `dsh.bundle` yet). */
 export const BUNDLE_NAME = '@sealed-lab/dsh-sealed-skills-lab'
@@ -393,7 +400,8 @@ function usage() {
       '  node scripts/dsh-lab.mjs --help',
       '',
       'Env: SEALED_DSH_LAB=1 enables the gated tests; SEALED_DSH_LAB_MOUNTS_FILE points at a',
-      '     JSON mounts array; DEEPSEEK_API_KEY is required for --headless.',
+      '     JSON mounts array; SEALED_DSH_LAB_PROFILE_NAME overrides the generated profile name;',
+      '     DEEPSEEK_API_KEY is required for --headless.',
       '',
       `Everything lives under ${toPosix(LAB_DIR)} (git-ignored); nothing outside it is written.`,
       '',

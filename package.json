@@ -2,6 +2,7 @@
   "name": "sealed-skills",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@12.9.1",
   "scripts": {
     "test": "corepack pnpm -r test",
     "build": "corepack pnpm -r build",

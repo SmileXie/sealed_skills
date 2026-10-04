@@ -26,5 +26,7 @@ jobs:
         run: corepack pnpm install --frozen-lockfile --config.strictDepBuilds=false
       - name: Build
         run: corepack pnpm -r build
+      - name: Test
+        run: corepack pnpm -r test
       - name: Leak gate
         run: corepack pnpm leak-gate

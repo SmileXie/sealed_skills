@@ -39,7 +39,14 @@ const DSH_MANIFEST = join(LAB, 'node_modules', '@deepseek-ai', 'dsh', 'package.j
 const APP_BOOT = join(LAB, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')
 const SESSION_ENTRY = join(LAB, 'node_modules', '@deepseek-ai', 'dsh-session', 'lib', 'index.js')
 const DSH_HOME = join(LAB, 'home')
-const PROFILE_DIR = join(DSH_HOME, 'profiles', 'm3-lab')
+/**
+ * A profile name dedicated to this test file. Vitest runs test files in parallel and
+ * `test/dsh-lab.test.ts` regenerates the shared default profile; a dedicated directory keeps the
+ * two writers from clobbering each other's `cordis.patch.yml` (intermittent false-RED under
+ * `SEALED_DSH_LAB=1`). Passed to the lab via `SEALED_DSH_LAB_PROFILE_NAME`.
+ */
+const PROFILE_NAME = 'm3-lab-integration'
+const PROFILE_DIR = join(DSH_HOME, 'profiles', PROFILE_NAME)
 const SEALED_HOME = join(LAB, 'sealed')
 const VERIFY_DIR = join(LAB, 'verify')
 const BUNDLE_NAME = '@sealed/dsh-sealed-skills'
@@ -170,6 +177,7 @@ describe('real dsh 0.2.x runtime integration', () => {
       encoding: 'utf8',
       env: {
         ...process.env,
+        SEALED_DSH_LAB_PROFILE_NAME: PROFILE_NAME,
         SEALED_DSH_LAB_MOUNTS_FILE: mountsFile,
         SEALED_DSH_LAB_PLUGIN_CONFIG_FILE: configFile,
       },
@@ -184,7 +192,7 @@ describe('real dsh 0.2.x runtime integration', () => {
 
   it('resolves our real bundle identity and passes the dsh peer compatibility gate', async () => {
     const appBoot = await import(pathToFileURL(APP_BOOT).href)
-    const profile = appBoot.loadProfile('dsh', 'm3-lab', DSH_MANIFEST, DSH_HOME)
+    const profile = appBoot.loadProfile('dsh', PROFILE_NAME, DSH_MANIFEST, DSH_HOME)
     // No skipped bundle at all: our real package resolves and its dsh peers satisfy the runtime.
     expect(profile.skippedBundles).toEqual([])
     expect(profile.layers.map((layer: any) => layer.packageName)).toContain(BUNDLE_NAME)

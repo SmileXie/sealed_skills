@@ -128,6 +128,10 @@ export function scanFilesForNeedles(files, needles) {
       try {
         decompressed = zstdDecompressSync(raw)
       } catch {
+        // A `.zstd` we cannot decompress is still scanned raw, but never silently: warn so a
+        // truncated/partially-flushed artifact is not mistaken for a clean payload scan. This is a
+        // warning, never a failure — a bad frame is not by itself evidence of a leak.
+        note('WARNING: could not decompress ' + file + '; only its raw bytes were scanned')
         continue
       }
       for (const hit of scanBufferForNeedles(decompressed, needles)) hits.push({ file, ...hit, how: 'zstd' })
