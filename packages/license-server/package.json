@@ -1,0 +1,14 @@
+{
+  "name": "@sealed/license-server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "engines": { "node": ">=22.5" },
+  "scripts": { "build": "tsc -p tsconfig.json", "test": "vitest run" },
+  "dependencies": {
+    "@sealed/canonical-json": "workspace:*",
+    "@sealed/license-format": "workspace:*",
+    "@sealed/pack-format": "workspace:*"
+  }
+}

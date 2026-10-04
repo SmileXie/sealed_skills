@@ -35,6 +35,18 @@ importers:
         specifier: workspace:*
         version: link:../canonical-json
 
+  packages/license-server:
+    dependencies:
+      '@sealed/canonical-json':
+        specifier: workspace:*
+        version: link:../canonical-json
+      '@sealed/license-format':
+        specifier: workspace:*
+        version: link:../license-format
+      '@sealed/pack-format':
+        specifier: workspace:*
+        version: link:../pack-format
+
   packages/pack-format:
     dependencies:
       '@sealed/canonical-json':
