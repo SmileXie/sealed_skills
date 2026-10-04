@@ -259,7 +259,7 @@ Baseline in our repo: `packages/dsh-sealed-skills/src/provider.ts` re-declares t
 - The **codegen rule** for `@messageProjection` (`scripts/gen-persistence-catalog.ts` is not published) — only its output set is visible. It does not matter for us: a plugin-owned type never enters that set, so the projection must self-register.
 - The exact **`ContentBlockMap` kinds** beyond `TextBlock` (`@deepseek-ai/dsh-llm` `types.d.ts:46,124-126`); the tool-skill code only uses `{type:'text', text}`.
 - Any published plugin that actually implements an `image/offload` projection (the referenced RFC is not in the tarballs) — the mechanics in §1 are read from `surface.*` and `lib/index.js`, which is sufficient.
-- Whether an **out-of-repo** plugin type can be added to `KNOWN_SESSION_EVENT_TYPES`: by design no (`known-event-types.d.ts:14-19`); the supported mechanism is `ignorable`.
+- **RESOLVED (Task 5, see 9.7)** - an out-of-repo plugin type CAN be registered at runtime by mutating the `@deepseek-ai/dsh-session` export `KNOWN_SESSION_EVENT_TYPES` (a mutable module singleton shared with persistence): BEFORE=REFUSED, AFTER=ADMITTED. The published comment ("by design no", `known-event-types.d.ts:14-19`) describes the codegen catalog, not the runtime Set. The planned `ignorable` marker is unreachable via `session.append` (see 9.7).
 - Real **`$DSH_HOME` profile boot**: not exercised (needs `dsh --from-default-profile`, pnpm, and model credentials). Worth one end-to-end run in M3.
 - Windows **sandbox backends**: `dsh-sandbox-local`/`dsh-pwsh-sandbox` are separate packages not downloaded; `SandboxProvider` is abstract and fail-closed and the policy vocabulary is host-agnostic, but which backend (if any) is available on Windows is unresolved.
 
@@ -321,3 +321,13 @@ Task 1 用本机真实安装的 `@deepseek-ai/dsh@0.2.0-rc.2`（`%TEMP%\dsh-reco
 - 安装器形状：`interface InvariantInstaller { (ctx: Context, fail: InvariantFailure): void | Promise<void>; readonly inject?: Inject; }` —— `index.d.ts:27-37`（调用签名 `:34`，可选 `inject` `:36`）。安装器运行在**子 fiber**（`lib/index.js:96` `ctx.plugin(...)`）；失败只拆除该注册。
 - `InvariantFailure = (message: string) => never` —— `index.d.ts:25`；运行时实现 `(message) => { throw new InvariantError(packageName, message) }` —— `lib/index.js:92-94`；`InvariantError.code === "INVARIANT"` —— `index.d.ts:41`。
 - 结论：Task 6 用 `ctx.invariants.register('<pkg>', (ctx, fail) => { … })`；违规时调用 `fail('…')` 即拆掉本注册，不影响其他插件。
+
+### 9.7 Task 5 裁决：运行时类型登记取代 `ignorable: true`（实测）
+
+- **实测 1（append 无法自带 `ignorable`）**：`session.append` 的 envelope 由 append 自建（`dsh-session/lib/index.js:1448-1457`），`...opts` 只承载 surface metadata（`surfaceOp`/`sourceEventSeqs`），非 surface 类型拿不到 `ignorable`。把带自定义类型的日志喂给持久化读路径 `validateStoredEvents`（`@deepseek-ai/dsh-session-persistence/lib/index.js:184`）会**拒绝整条日志**：`unknown to this harness and not marked ignorable`。
+- **实测 2（运行时登记即放行）**：`import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'` 得到的 Set 是模块单例，persistence 用的是同一对象；运行时 `KNOWN_SESSION_EVENT_TYPES.add('sealed/redacted')` 之后同一读路径即放行（BEFORE=REFUSED，AFTER=ADMITTED）。
+- **实测 3（投影取原始消息）**：`context.messages` 只含此前被投影过的消息；普通 surface 节点不在其中。正确写法与 dsh 自身的 `image/offload` 一致（`dsh-compaction-image-offload/lib/index.js:116`）：`const message = context.messages.get(seq) ?? (source.type === 'user/message' ? source.data : source.data.message)`，其中 `source = context.events[seq - context.baseSeq]` 且 `seq` 必须是当前节点（`context.nodes` 含它）。
+- **裁决**：采用"自有 `sealed/redacted` 事件 + apply 时把该类型加入 `KNOWN_SESSION_EVENT_TYPES`"，**取代**计划 §3.1/Global Constraints 里"事件自带 `ignorable: true`"的写法。dsh 0.2.x 没有 append-with-ignorable 的公开 API；运行时登记是唯一让**装了本插件**的 harness 能重开会话的途径。
+- **代价（残余风险 / 未验证项）**：用过 sealed 技能的会话，在**未安装本插件的 harness** 上会被拒绝读取整条日志（而非优雅回退占位符）。这与 dsh 对 `image/offload` 的固有行为方向一致（缺插件就不能恢复该会话），但错误更硬。**上游缺口（建议）**：dsh 提供 append-with-ignorable 或 session 级 redaction API。
+- **其它残余风险（fail-safe 方向）**：`/name` 注入的 `user/message` 由 `agent/pre-step` 在水位线内产生；marker 的 `queueMicrotask` 追加失败（重入/校验拒绝）时，模型当次只看到占位符（无明文泄漏）；`apply()` 后的 warm() 仅为尽力而为，未覆盖的条目在恢复会话里同样只显示占位符。
+- **真机 I/O 位置**：`packages/dsh-sealed-skills/src/plugin.ts` 的 `registerDshSessionEventType()`（动态 import，仓库依赖图零 `@deepseek-ai/dsh*`，`pnpm-lock.yaml` 0 引用）；真机断言见 `test/dsh-log-mask.test.ts` 与 `test/dsh-integration.test.ts`（`SEALED_DSH_LAB=1` 门控）。lab 用 junction 挂载本包，Node realpath 解析使裸说明符找不到 dsh，故 lab 测试经 `config.dshSessionModule`（或 `SEALED_DSH_SESSION_MODULE`）传入已解析入口；正常安装（本包与 dsh 同一 `node_modules` 树）用裸说明符即可。

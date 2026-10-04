@@ -14,6 +14,7 @@ import { SealedCore } from '../src/core.js'
 import { LicenseClient } from '../src/license-client.js'
 import { FileKeystore } from '../src/keystore.js'
 import { apply, type SkillsContext } from '../src/plugin.js'
+import { parsePlaceholder } from '../src/session-events.js'
 import type { DshSkillCandidate, DshSkillProvider, DshSkillProviderControl } from '../src/provider.js'
 
 const packId = 'com.example.translate'
@@ -115,7 +116,13 @@ function fakeContext(): { ctx: SkillsContext; provider: () => DshSkillProvider }
       },
     },
   }
-  return { ctx, provider: () => registered! }
+  const readyCtx: SkillsContext = {
+    ...ctx,
+    logger: { warn: () => {} },
+    sessions: { registerMessageProjection: () => async () => {} },
+    on: () => () => {},
+  }
+  return { ctx: readyCtx, provider: () => registered! }
 }
 
 describe('M2 licensing end to end', () => {
@@ -189,12 +196,15 @@ describe('M2 licensing end to end', () => {
       serverUrl: url,
       serverProofPubB64: keys.proofPublicB64,
       keystoreDir: home,
+      registerSessionEventType: () => {},
     })
 
     const candidates = (await provider().list({})) as DshSkillCandidate[]
     expect(candidates.map((candidate) => candidate.name)).toEqual(['translate'])
     const definition = await provider().get(candidates[0], {})
-    expect(definition?.content).toBe('把用户输入翻译成英文。\n')
+    const placeholder = definition?.content ?? ''
+    expect(parsePlaceholder(placeholder)).toHaveLength(1)
+    expect(placeholder).not.toContain('把用户输入翻译成英文。\n')
     expect(existsSync(join(home, 'device.json'))).toBe(true)
   })
 
@@ -221,11 +231,14 @@ describe('M2 licensing end to end', () => {
       serverUrl: url,
       serverProofPubB64: keys.proofPublicB64,
       keystoreDir: home,
+      registerSessionEventType: () => {},
     })
 
     const candidates = (await provider().list({})) as DshSkillCandidate[]
     expect(candidates.map((candidate) => candidate.name)).toEqual(['translate'])
-    expect((await provider().get(candidates[0], {}))?.content).toBe('把用户输入翻译成英文。\n')
+    const loaded = (await provider().get(candidates[0], {}))?.content ?? ''
+    expect(parsePlaceholder(loaded)).toHaveLength(1)
+    expect(loaded).not.toContain('把用户输入翻译成英文。\n')
   })
 
   it('rebuilds a cached mount after the refresh interval elapses', async () => {
@@ -250,6 +263,7 @@ describe('M2 licensing end to end', () => {
       mounts: [{ packPath, licensePath }],
       trustedLicenseKeysB64: [licensePublic],
       keystoreDir: home,
+      registerSessionEventType: () => {},
       now: () => clock.t,
     })
 

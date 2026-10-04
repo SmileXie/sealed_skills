@@ -1,7 +1,11 @@
 import {
+  assertLosslessEventData,
+  parsePlaceholder,
   placeholderFor,
   revealPlaceholder,
+  sealedRedactedData,
   SEALED_REDACTED,
+  type SealedPlaceholderRegistry,
   type SealedRedactedData,
 } from './session-events.js'
 
@@ -30,8 +34,13 @@ export interface SealedMessage {
 }
 
 export interface SealedProjectionContext {
+  /** Current message-producing seqs, in model order. A marker may only rewrite a CURRENT node. */
   readonly nodes: readonly SealedSeq[]
+  /** Contiguous committed event window; `events[refSeq - baseSeq]` is the durable source event. */
   readonly events: readonly unknown[]
+  /** Log offset of `events[0]` (0 for a created session, `inheritedEventCount` on a fork). */
+  readonly baseSeq: number
+  /** Previously projected messages by original seq (a projection's own prior rewrite target). */
   readonly messages: ReadonlyMap<SealedSeq, SealedMessage>
 }
 
@@ -40,6 +49,12 @@ export interface SealedRedactedEvent {
   readonly type: string
   readonly data: SealedRedactedData
   readonly ignorable?: true
+}
+
+/** The subset of a durable source event the projection reads (parity with dsh `image/offload`). */
+interface SealedSourceEvent {
+  readonly type?: unknown
+  readonly data?: unknown
 }
 
 export interface SealedMessageProjection {
@@ -101,9 +116,24 @@ function projectSealedRedacted(
   if (typeof token !== 'string' || token.length === 0) return empty()
   if (typeof alg !== 'string' || alg.length === 0) return empty()
 
-  const messages = context?.messages
-  if (messages === undefined || typeof messages.get !== 'function') return empty()
-  const target = messages.get(refSeq)
+  // (1) The marker may only rewrite a CURRENT surface node (never a shadowed/unknown seq).
+  const nodes = context?.nodes
+  if (!Array.isArray(nodes) || !nodes.includes(refSeq)) return empty()
+  // (2)+(3) Read the durable source exactly like dsh's own `image/offload` projection
+  // (`dsh-compaction-image-offload/lib/index.js:116`): the target message is usually NOT in
+  // `context.messages` (that map only holds prior projection outputs), so fall back to the
+  // committed event window keyed by `refSeq - context.baseSeq`.
+  const events = context?.events
+  const baseSeq = context?.baseSeq
+  if (!Array.isArray(events) || typeof baseSeq !== 'number' || !Number.isInteger(baseSeq) || baseSeq < 0) return empty()
+  const source = events[refSeq - baseSeq] as SealedSourceEvent | undefined
+  if (source === null || typeof source !== 'object') return empty()
+  let baseMessage: SealedMessage | undefined
+  if (source.type === 'user/message') baseMessage = source.data as SealedMessage | undefined
+  else if (source.type === 'tool/result') baseMessage = (source.data as { message?: SealedMessage } | undefined)?.message
+  else return empty()
+  const projected = context.messages?.get?.(refSeq)
+  const target = projected ?? baseMessage
   if (target === undefined || target === null) return empty()
   const blocks = target.content
   if (!Array.isArray(blocks)) return empty()
@@ -179,5 +209,153 @@ export function assertLogMaskReady(candidate: {
   }
   if (projection.type !== SEALED_REDACTED) {
     throw new LogMaskNotReadyError('log-mask projection type is not ' + SEALED_REDACTED)
+  }
+}
+
+// --- Landing-path marker observer -------------------------------------------------------------
+//
+// Both skill-content landing paths commit a message carrying our unguessable placeholder:
+//   * `tool/result`  — the built-in skill tool's frozen result (`data.message.content`).
+//   * `user/message` — the `/name` gesture injection (`data.source.kind === 'skill-invocation'`).
+// After such an event commits, this observer appends the `sealed/redacted` marker so the
+// registered projection can rewrite the earlier seq back to plaintext for the model.
+//
+// NON-REENTRANCY (dsh 0.2.x contract, `dsh-session/lib/index.js:1452`): a `session/event`
+// observer runs INSIDE the append's publication boundary (`entry.appending === true`), so a
+// synchronous `append` throws `session append cannot reenter while another append is being
+// published`. We therefore only ever SCHEDULE the append (default `queueMicrotask`) and swallow
+// any failure: a lost marker leaves the placeholder visible to the model — never a plaintext leak.
+
+export interface SealedSessionLike {
+  append(type: string, data: SealedRedactedData): unknown
+}
+
+export interface SealedSessionEventLike {
+  readonly type?: unknown
+  readonly seq?: unknown
+  readonly data?: unknown
+}
+
+export interface SealedMarkerObserverDeps {
+  readonly registry: SealedPlaceholderRegistry
+  /** Schedule the append outside the current publication boundary; defaults to `queueMicrotask`. */
+  readonly defer?: (task: () => void) => void
+  /** Perform the append; defaults to `session.append(SEALED_REDACTED, data)`. */
+  readonly append?: (session: SealedSessionLike, data: SealedRedactedData) => void
+}
+
+export interface SealedMarkerObserver {
+  readonly onSessionEvent: (session: SealedSessionLike, event: SealedSessionEventLike) => void
+  /** Scheduled-but-not-yet-executed marker appends (test/diagnostic visibility). */
+  readonly pending: number
+}
+
+/** Text blocks of a message-shaped payload, in order. */
+function messageTexts(message: unknown): readonly string[] {
+  if (message === null || typeof message !== 'object') return []
+  const content = (message as { content?: unknown }).content
+  if (!Array.isArray(content)) return []
+  const texts: string[] = []
+  for (const block of content) {
+    if (block === null || typeof block !== 'object') continue
+    const text = (block as { text?: unknown }).text
+    if (typeof text === 'string') texts.push(text)
+  }
+  return texts
+}
+
+/** Placeholder tokens present in the committed message of an eligible landing-path event. */
+function placeholderTokensInEvent(event: SealedSessionEventLike): readonly string[] {
+  if (event === null || typeof event !== 'object') return []
+  const data = event.data
+  if (data === null || typeof data !== 'object') return []
+  if (event.type === 'tool/result') {
+    return messageTexts((data as { message?: unknown }).message).flatMap((text) => parsePlaceholder(text))
+  }
+  if (event.type === 'user/message') {
+    const source = (data as { source?: unknown }).source
+    if (source === null || typeof source !== 'object' || (source as { kind?: unknown }).kind !== 'skill-invocation') return []
+    return messageTexts(data).flatMap((text) => parsePlaceholder(text))
+  }
+  return []
+}
+
+export function createSealedMarkerObserver(deps: SealedMarkerObserverDeps): SealedMarkerObserver {
+  const registry = deps.registry
+  const defer = deps.defer ?? ((task: () => void) => queueMicrotask(task))
+  const append = deps.append ?? ((session: SealedSessionLike, data: SealedRedactedData) => { session.append(SEALED_REDACTED, data) })
+  const seen = new Set<string>()
+  let pending = 0
+  return {
+    get pending() {
+      return pending
+    },
+    onSessionEvent(session, event) {
+      try {
+        if (session === null || typeof session !== 'object') return
+        const refSeq = event?.seq
+        if (typeof refSeq !== 'number' || !Number.isInteger(refSeq) || refSeq < 0) return
+        for (const token of placeholderTokensInEvent(event)) {
+          const record = registry.lookup(token)
+          if (record === undefined) continue
+          const key = refSeq + ':' + token
+          if (seen.has(key)) continue
+          seen.add(key)
+          const data = sealedRedactedData(refSeq, record.entryId, token, record.alg)
+          try {
+            assertLosslessEventData(data)
+          } catch {
+            continue
+          }
+          pending += 1
+          const run = () => {
+            pending -= 1
+            try {
+              append(session, data)
+            } catch {
+              // Fail-safe: no marker => the model keeps the placeholder; never plaintext, never a throw.
+            }
+          }
+          try {
+            defer(run)
+          } catch {
+            pending -= 1
+          }
+        }
+      } catch {
+        // A session/event listener must never throw into the append publisher's observer loop.
+      }
+    },
+  }
+}
+
+// --- Plaintext reveal cache -------------------------------------------------------------------
+//
+// The provider stores each decrypted body as a single Buffer here; the projection reads it back as
+// a string. `dispose()` zeroizes every buffer (spec section 8). Nothing else retains plaintext.
+
+export interface SealedPlaintextReveal {
+  readonly reveal: NonNullable<LogMaskDeps['reveal']>
+  save(entryId: string, content: string): void
+  dispose(): void
+}
+
+export function createPlaintextReveal(): SealedPlaintextReveal {
+  const buffers = new Map<string, Buffer>()
+  return {
+    reveal(entryId) {
+      const buffer = buffers.get(entryId)
+      return buffer === undefined ? undefined : buffer.toString('utf8')
+    },
+    save(entryId, content) {
+      if (typeof entryId !== 'string' || entryId.length === 0) return
+      const previous = buffers.get(entryId)
+      if (previous !== undefined) previous.fill(0)
+      buffers.set(entryId, Buffer.from(content, 'utf8'))
+    },
+    dispose() {
+      for (const buffer of buffers.values()) buffer.fill(0)
+      buffers.clear()
+    },
   }
 }

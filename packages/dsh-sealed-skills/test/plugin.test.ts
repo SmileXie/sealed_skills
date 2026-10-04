@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { apply, inject, name, type SkillsContext } from '../src/plugin.js'
 import type { DshSkillProvider, DshSkillProviderControl } from '../src/provider.js'
 
-function fakeContext(): { ctx: SkillsContext; provider: () => DshSkillProvider } {
+function fakeContext(overrides: Partial<SkillsContext> = {}): { ctx: SkillsContext; provider: () => DshSkillProvider } {
   let registered: DshSkillProvider | undefined
   const ctx: SkillsContext = {
     skills: {
@@ -14,6 +14,8 @@ function fakeContext(): { ctx: SkillsContext; provider: () => DshSkillProvider }
         return () => {}
       },
     },
+    logger: { warn: () => {} },
+    ...overrides,
   }
   return { ctx, provider: () => registered! }
 }
@@ -70,5 +72,63 @@ describe('sealed-skills plugin', () => {
     })
     await expect(provider().list({})).resolves.toEqual([])
     await expect(provider().get({ name: 'x', locator: { sealedSkill: 'x' } } as never, {})).resolves.toBeUndefined()
+  })
+})
+
+describe('sealed-skills plugin log-mask fail-closed', () => {
+  const lookup = { name: 'x', locator: { sealedSkill: 'x' } } as never
+
+  it('refuses to serve when the projection cannot be registered', async () => {
+    const { ctx, provider } = fakeContext({
+      sessions: {
+        registerMessageProjection: () => {
+          throw new Error('session message projection sealed/redacted is already registered')
+        },
+      },
+      on: () => () => {},
+    })
+    apply(ctx, {
+      mounts: [], trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir(),
+      registerSessionEventType: () => {},
+    })
+    await expect(provider().list({})).resolves.toEqual([])
+    await expect(provider().get(lookup, {})).resolves.toBeUndefined()
+  })
+
+  it('refuses to serve when the marker event type cannot be registered', async () => {
+    const { ctx, provider } = fakeContext({
+      sessions: { registerMessageProjection: () => async () => {} },
+      on: () => () => {},
+    })
+    apply(ctx, {
+      mounts: [], trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir(),
+      registerSessionEventType: () => { throw new Error('the harness event catalog is unavailable') },
+    })
+    await expect(provider().list({})).resolves.toEqual([])
+    await expect(provider().get(lookup, {})).resolves.toBeUndefined()
+  })
+
+  it('refuses to serve when the context cannot observe session events', async () => {
+    const { ctx, provider } = fakeContext({
+      sessions: { registerMessageProjection: () => async () => {} },
+    })
+    apply(ctx, {
+      mounts: [], trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir(),
+      registerSessionEventType: () => {},
+    })
+    await expect(provider().list({})).resolves.toEqual([])
+    await expect(provider().get(lookup, {})).resolves.toBeUndefined()
+  })
+
+  it('serves only after the log-mask is ready', async () => {
+    const { ctx, provider } = fakeContext({
+      sessions: { registerMessageProjection: () => async () => {} },
+      on: () => () => {},
+    })
+    apply(ctx, {
+      mounts: [], trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir(),
+      registerSessionEventType: () => {},
+    })
+    await expect(provider().list({})).resolves.toEqual([])
   })
 })

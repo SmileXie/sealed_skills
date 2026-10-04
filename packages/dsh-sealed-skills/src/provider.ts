@@ -45,6 +45,30 @@ export function createPlaceholderContentFor(
   }
 }
 
+/** Sink that retains one decrypted body per entry for the log-mask projection's `reveal`. */
+export interface SealedPlaintextSink {
+  save(entryId: string, content: string): void
+}
+
+/**
+ * Task 5 redacting hook: cache the real body for `reveal()`, record the freshly rendered token so
+ * the landing-path observer can map a committed placeholder back to its entry, and return ONLY the
+ * placeholder. The plaintext never enters the returned content.
+ */
+export function createCachingContentFor(
+  registry: SealedPlaceholderRegistry,
+  sink: SealedPlaintextSink,
+  opts: { alg?: string } = {},
+): SealedContentFor {
+  const alg = opts.alg ?? SEALED_REDACTED_ALG
+  return (_name, entryId, realContent) => {
+    sink.save(entryId, realContent)
+    const placeholder = renderPlaceholder(entryId)
+    registry.record(placeholder.token, { entryId, alg })
+    return placeholder.text
+  }
+}
+
 export function createSkillProvider(core: Pick<SealedCore, 'list' | 'readSkill'>): SkillProviderLike {
   return {
     name: 'sealed',

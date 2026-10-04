@@ -11,6 +11,7 @@ import {
 } from '@sealed/pack-format'
 import { b64u, rawPrivateBytes } from '@sealed/license-format'
 import { createApp, loadServerKeys, openStore, serverLicensePublicB64 } from '@sealed/license-server'
+import { parsePlaceholder } from '../src/session-events.js'
 
 /**
  * Real dsh 0.2.x runtime integration — closes M2's long-standing "plugin loader UNVERIFIED" gap.
@@ -20,7 +21,7 @@ import { createApp, loadServerKeys, openStore, serverLicensePublicB64 } from '@s
  *     resolves our shipped bundle `@sealed/dsh-sealed-skills` through its `dsh.bundle` declaration —
  *     no generated shim — and confirms our real package clears the dsh peer compatibility gate.
  *  2. A credential-free programmatic boot (`app-boot.boot`) of a minimal entry list
- *     (`@deepseek-ai/dsh-skill` + `@sealed/dsh-sealed-skills`, both resolved by their genuine package
+ *     (`@deepseek-ai/dsh-skill` + `@deepseek-ai/dsh-session` + `@sealed/dsh-sealed-skills`, all resolved by their genuine package
  *     names) runs `apply(ctx, config)` against the real `SkillRegistry`, with a real signed pack and a
  *     real license server.
  *
@@ -36,6 +37,7 @@ const PLUGIN_DIR = join(REPO_ROOT, 'packages', 'dsh-sealed-skills')
 const DSH_BIN = join(LAB, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
 const DSH_MANIFEST = join(LAB, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
 const APP_BOOT = join(LAB, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')
+const SESSION_ENTRY = join(LAB, 'node_modules', '@deepseek-ai', 'dsh-session', 'lib', 'index.js')
 const DSH_HOME = join(LAB, 'home')
 const PROFILE_DIR = join(DSH_HOME, 'profiles', 'm3-lab')
 const SEALED_HOME = join(LAB, 'sealed')
@@ -56,6 +58,8 @@ const skipReason = requested
   : 'SEALED_DSH_LAB is not set to 1 (the dsh lab is opt-in)'
 
 const toPosix = (value: string) => value.replace(/\\/g, '/')
+
+const flushMicrotasks = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
 function readJson(file: string): any {
   return JSON.parse(readFileSync(file, 'utf8'))
@@ -154,6 +158,9 @@ describe('real dsh 0.2.x runtime integration', () => {
       trustedLicenseKeysB64: [licensePublicB64],
       serverUrl,
       serverProofPubB64: proofPublicB64,
+      // The lab junctions this package, so the bare `@deepseek-ai/dsh-session` specifier cannot
+      // resolve from our realpath; point the plugin's dynamic import at the installed entry.
+      dshSessionModule: pathToFileURL(SESSION_ENTRY).href,
     }
     const configFile = join(VERIFY_DIR, 'plugin-config.json')
     writeFileSync(configFile, JSON.stringify(pluginConfig))
@@ -199,6 +206,8 @@ describe('real dsh 0.2.x runtime integration', () => {
     writeFileSync(cfg, [
       '- id: skill',
       "  name: '@deepseek-ai/dsh-skill'",
+      '- id: session',
+      "  name: '@deepseek-ai/dsh-session'",
       `- id: ${PLUGIN_ID}`,
       `  name: '${BUNDLE_NAME}'`,
       `  config: ${JSON.stringify(config)}`,
@@ -229,12 +238,50 @@ describe('real dsh 0.2.x runtime integration', () => {
       expect(summary.description).toBe('翻译')
 
       const definition = await skills.get('translate', { cwd: REPO_ROOT })
-      expect(definition?.content).toBe(BODY)
       expect(definition?.provider).toBe('sealed')
       expect('path' in definition).toBe(false)
       expect(definition?.resourceBase).toBeUndefined()
+      // Task 5: the provider serves an unguessable placeholder, never the body.
+      const placeholder = definition?.content ?? ''
+      expect(parsePlaceholder(placeholder)).toHaveLength(1)
+      expect(placeholder).not.toContain(BODY)
       // The device key was provisioned on demand inside the real runtime.
       expect(existsSync(join(SEALED_HOME, 'device.json'))).toBe(true)
+
+      // Task 5 end-to-end: both landing paths on a REAL session. The durable log holds only the
+      // placeholder plus our marker; the model's derived view holds the plaintext.
+      const sessions = ctx.get('sessions')
+      const session = sessions.create('m3-landing-path')
+      session.append(
+        'tool/result',
+        { turn: 0, step: 0, message: { id: 'tool-1', role: 'tool', content: [{ type: 'text', text: placeholder }] } },
+        { surfaceOp: 'append' },
+      )
+      await flushMicrotasks()
+      const durable = session.snapshotEvents()
+      expect(durable.map((event: any) => event.type)).toEqual(['tool/result', 'sealed/redacted'])
+      expect(durable[0].data.message.content[0].text).toBe(placeholder)
+      expect(durable[0].data.message.content[0].text).not.toBe(BODY)
+      const derivedTool = session.deriveMessages().find((message: any) => message.id === 'tool-1')
+      expect(derivedTool.content[0].text).toBe(BODY)
+
+      // /name path: a skill-invocation user/message carrying the same placeholder.
+      session.append(
+        'user/message',
+        {
+          id: 'user-1',
+          role: 'user',
+          source: { kind: 'skill-invocation', name: 'translate', form: 'instructions' },
+          content: [{ type: 'text', text: placeholder }],
+        },
+        { surfaceOp: 'append' },
+      )
+      await flushMicrotasks()
+      expect(session.snapshotEvents().map((event: any) => event.type)).toEqual([
+        'tool/result', 'sealed/redacted', 'user/message', 'sealed/redacted',
+      ])
+      const derivedUser = session.deriveMessages().find((message: any) => message.id === 'user-1')
+      expect(derivedUser.content[0].text).toBe(BODY)
     } finally {
       await ctx.fiber.dispose()
     }
