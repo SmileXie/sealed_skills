@@ -1,4 +1,4 @@
-﻿# Sealed Skills 设计规范
+# Sealed Skills 设计规范
 
 - 状态：待审阅（brainstorming 第 6 步产出）
 - 日期：2026-10-04
@@ -366,7 +366,7 @@ interface DecryptBackend {
    `ss = ECDH(device_priv, server_proof_pub)`；
    `key = HKDF-SHA256(ss, salt=utf8(lid), info=utf8("device-proof:"), 32)`；
    `mac = HMAC-SHA256(key, utf8(lid)||0x00||utf8(nonce)||0x00||utf8(String(ts)))`。）
-2. 服务端验签证明设备持有私钥 → 查吊销/席位/订阅 → 签发新 license
+2. 服务端校验 DH-MAC 证明设备持有私钥 → 查吊销/席位/订阅 → 签发新 license
 3. 联网失败但未过 exp：静默继续，缩短下次重试间隔（指数退避 + 抖动）
 4. 已过 exp 未续上：进入 grace，技能照常 + 提示续费
 5. grace 结束：技能停用；包与数据不删除
