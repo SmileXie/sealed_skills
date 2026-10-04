@@ -283,7 +283,7 @@ describe('sealed-skills plugin log-mask fail-closed', () => {
       workspaceRoot: process.cwd(),
       defineTool: (options) => ({
         name: options.name, description: options.description, parameters: options.parameters,
-        presentation: options.presentation, output: options.output, execute: options.execute,
+        output: options.output, execute: options.execute,
       }),
     })
     await waitFor(() => registered.some((definition) => definition.name === 'sealed_script_translate_run_mjs'))

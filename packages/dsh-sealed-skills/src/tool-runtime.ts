@@ -32,10 +32,12 @@ import { spawn as nodeSpawn } from 'node:child_process'
  *                                             workspaceRoot, sessionId? }
  *   dsh-sandbox `lib/types/index.d.ts:107-115` SANDBOX_UNAVAILABLE / SandboxUnavailableError
  *
- * Presentation: a plain registered native tool. The dsh `ptc` mode is a `dsh-tools` Config concern
- * (under `ptc` a model-direct call may only name the reserved `run_code` transport), so this tool
- * declares `presentation: 'native'` and never binds `ctx.ptcRuntime`. `defineTool` ignores the
- * extra key; it is carried for our own tests and future presentation modes.
+ * Presentation: a plain tool registered under the `sealed_script_*` name (never the reserved
+ * `run_code`). `dsh-tools` `mode: 'ptc'` only lets a MODEL-DIRECT call name the reserved `run_code`
+ * transport, so `ptc` cannot reach this tool directly (it stays callable as a nested sub-dispatch);
+ * under `native` / `both` it is an ordinary model-callable tool. There is NO per-tool presentation
+ * field in `DefineToolOptions` (`dsh-tools/lib/types/schema.d.ts:178-240`): an earlier draft passed
+ * a dead `presentation: 'native'` key, now removed.
  *
  * Zero-plaintext guarantees: the SECRET here is the decrypted script SOURCE. It never reaches argv,
  * a temp file, a log line, or an error message — the child only sees it on stdin, and the source
@@ -55,6 +57,67 @@ export const SEALED_SCRIPT_DEFAULT_TIMEOUT_MS = 30_000
 /** Combined stdout+stderr cap; exceeding it kills the child and fails closed. */
 export const SEALED_SCRIPT_MAX_OUTPUT_BYTES = 1_048_576
 
+/** A trimmed, non-empty source line at least this long is a leak signature (Node code frames echo lines). */
+export const SEALED_SCRIPT_LEAK_LINE_MIN = 16
+/** A contiguous slice of source at least this long is a leak signature (partial / normalized echo). */
+export const SEALED_SCRIPT_LEAK_WINDOW_MIN = 32
+/** Step between window starts; sealed script sources are tiny, so dense coverage stays cheap. */
+export const SEALED_SCRIPT_LEAK_WINDOW_STEP = 8
+/** Upper bound on windows scanned, so a pathological multi-MB source cannot stall the tool. */
+export const SEALED_SCRIPT_LEAK_MAX_WINDOWS = 8192
+
+/**
+ * True when a child stream (stdout or stderr) echoes sealed SOURCE material. Deliberately
+ * conservative: a false positive only withholds output, a false negative would put source into the
+ * model context and the durable session log, where neither the log-mask nor the plaintext sentinel
+ * can catch it (scripts are never placeholder-redacted).
+ *
+ *  - LINE signature: any non-empty trimmed source line of >= {@link SEALED_SCRIPT_LEAK_LINE_MIN}
+ *    chars that appears in the output. This is what Node's syntax-error code frame leaks.
+ *  - WINDOW signature: any contiguous {@link SEALED_SCRIPT_LEAK_WINDOW_MIN}-char source window that
+ *    appears in the output (catches whitespace-normalized or partial echoes), scanning at most
+ *    {@link SEALED_SCRIPT_LEAK_MAX_WINDOWS} starts.
+ */
+export function leaksSealedSource(output: string, sourceText: string): boolean {
+  if (output.length === 0 || sourceText.length === 0) return false
+  for (const rawLine of sourceText.split('\n')) {
+    const line = rawLine.trim()
+    if (line.length >= SEALED_SCRIPT_LEAK_LINE_MIN && output.includes(line)) return true
+  }
+  let windows = 0
+  for (let start = 0; start + SEALED_SCRIPT_LEAK_WINDOW_MIN <= sourceText.length; start += SEALED_SCRIPT_LEAK_WINDOW_STEP) {
+    if (windows >= SEALED_SCRIPT_LEAK_MAX_WINDOWS) break
+    windows += 1
+    if (output.includes(sourceText.slice(start, start + SEALED_SCRIPT_LEAK_WINDOW_MIN))) return true
+  }
+  return false
+}
+
+/**
+ * Node-only prelude prepended to the stdin program. It replaces Node's default uncaught-error dump
+ * (a code frame containing the offending source line) with a fixed, body-free line, so an ordinary
+ * runtime throw or unhandled rejection cannot leak the source. SYNTAX errors fail before it runs,
+ * which is why {@link leaksSealedSource} remains the authoritative gate.
+ * Probe-verified on Node v24.14.1: normal scripts are unaffected; `import` declarations after the
+ * prelude still hoist correctly.
+ */
+export const SEALED_SCRIPT_NODE_PRELUDE = [
+  "process.on('uncaughtException', () => {",
+  '  process.exitCode = 1',
+  "  process.stderr.write('[sealed-script] the sealed script threw; its diagnostics were withheld\\n')",
+  '})',
+  "process.on('unhandledRejection', () => {",
+  '  process.exitCode = 1',
+  "  process.stderr.write('[sealed-script] the sealed script rejected; its diagnostics were withheld\\n')",
+  '})',
+  '',
+].join('\n')
+
+/** The exact program delivered on stdin: the node prelude precedes the secret source. */
+export function sealedScriptProgram(runtime: 'node' | 'python', sourceText: string): string {
+  return runtime === 'node' ? SEALED_SCRIPT_NODE_PRELUDE + sourceText : sourceText
+}
+
 /** Structured failure reasons. `message` is always the matching fixed, plaintext-free text. */
 export type SealedScriptFailureReason =
   | 'sandbox-unavailable'
@@ -63,6 +126,8 @@ export type SealedScriptFailureReason =
   | 'timeout'
   | 'aborted'
   | 'output-limit'
+  | 'output-redacted'
+  | 'sandbox-not-enforcing'
 
 export type SealedScriptResult =
   | { readonly ok: true; readonly stdout: string; readonly stderr: string; readonly exitCode: number }
@@ -75,6 +140,8 @@ const SAFE_MESSAGES: Record<SealedScriptFailureReason, string> = {
   timeout: 'the sealed script exceeded its time limit',
   aborted: 'the sealed script was cancelled',
   'output-limit': 'the sealed script produced too much output',
+  'output-redacted': 'the sealed script output was withheld because it contained script source',
+  'sandbox-not-enforcing': 'the host sandbox could not fully enforce the requested policy, so the sealed script was not executed',
 }
 
 function failure(reason: SealedScriptFailureReason): SealedScriptResult {
@@ -198,10 +265,25 @@ function isSandboxUnavailable(error: unknown): boolean {
   return shaped.code === 'SANDBOX_UNAVAILABLE' || shaped.name === 'SandboxUnavailableError'
 }
 
+type ConfinementVerdict = 'ok' | 'unavailable' | 'not-enforcing'
+
+/**
+ * Conservative classification of a `confine()` result. Only `enforcement: 'full'` is trusted:
+ * `'partial'` means the backend cannot govern every promised file effect, so we refuse rather than
+ * run a sealed script behind a weaker boundary than the policy claims. A malformed/non-string argv
+ * is treated as unavailable.
+ */
+function classifyConfinement(value: unknown): ConfinementVerdict {
+  if (value === null || typeof value !== 'object') return 'unavailable'
+  const candidate = value as { argv?: unknown; enforcement?: unknown }
+  const argv = candidate.argv
+  if (!Array.isArray(argv) || argv.length === 0) return 'unavailable'
+  if (!argv.every((part) => typeof part === 'string' && part.length > 0)) return 'unavailable'
+  return candidate.enforcement === 'full' ? 'ok' : 'not-enforcing'
+}
+
 function isEnforcingArgv(value: unknown): value is ConfinedArgv {
-  if (value === null || typeof value !== 'object') return false
-  const argv = (value as { argv?: unknown }).argv
-  return Array.isArray(argv) && argv.length > 0 && argv.every((part) => typeof part === 'string')
+  return classifyConfinement(value) === 'ok'
 }
 
 function appendChunk(target: Buffer[], chunk: unknown): number {
@@ -238,7 +320,9 @@ export async function executeSealedScript(
       // A malformed/absent confinement result is a refusal, never a silent unconfined passthrough.
       return failure(isSandboxUnavailable(error) ? 'sandbox-unavailable' : 'spawn-failed')
     }
-    if (!isEnforcingArgv(confined)) return failure('sandbox-unavailable')
+    if (!isEnforcingArgv(confined)) {
+      return failure(classifyConfinement(confined) === 'not-enforcing' ? 'sandbox-not-enforcing' : 'sandbox-unavailable')
+    }
 
     return await runConfined(spawn, confined, source, spec, signal)
   } catch {
@@ -255,6 +339,10 @@ function runConfined(
   spec: SealedScriptSpec,
   signal?: AbortSignal,
 ): Promise<SealedScriptResult> {
+  // The secret source lives only until the output is collected; the caller zeroizes the Buffer in
+  // its own `finally`. `program` (prelude + source for node) is what actually reaches the child.
+  const sourceText = source.toString('utf8')
+  const program = sealedScriptProgram(spec.runtime, sourceText)
   return new Promise<SealedScriptResult>((resolve) => {
     let child: SealedChildProcessLike
     try {
@@ -313,16 +401,25 @@ function runConfined(
         finish(failure('spawn-failed'))
       })
       child.on('close', (code) => {
+        const dropChunks = (): void => {
+          for (const chunk of stdoutChunks) chunk.fill(0)
+          for (const chunk of stderrChunks) chunk.fill(0)
+        }
         if (overflowed) {
+          dropChunks()
           finish(failure('output-limit'))
           return
         }
-        finish({
-          ok: true,
-          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-          stderr: Buffer.concat(stderrChunks).toString('utf8'),
-          exitCode: typeof code === 'number' ? code : -1,
-        })
+        const stdout = Buffer.concat(stdoutChunks).toString('utf8')
+        const stderr = Buffer.concat(stderrChunks).toString('utf8')
+        if (leaksSealedSource(stdout, sourceText) || leaksSealedSource(stderr, sourceText)) {
+          // Fail closed: never surface a stream that echoes sealed source (a Node code frame, a
+          // deliberate echo, ...). The bytes are dropped and the buffers zeroized.
+          dropChunks()
+          finish(failure('output-redacted'))
+          return
+        }
+        finish({ ok: true, stdout, stderr, exitCode: typeof code === 'number' ? code : -1 })
       })
     } catch {
       kill()
@@ -353,7 +450,7 @@ function runConfined(
       return
     }
     try {
-      child.stdin.end(source)
+      child.stdin.end(program)
     } catch {
       kill()
       finish(failure('spawn-failed'))
@@ -389,7 +486,6 @@ export interface SealedScriptToolOptions {
   readonly name: string
   readonly description: string
   readonly parameters: SealedParameterSchemaSpec
-  readonly presentation: 'native' | 'both'
   readonly output: SealedToolOutputDefinition
   readonly timeoutMs?: number
   execute(args: unknown, exec: SealedToolRunContextLike): Promise<unknown>
@@ -399,7 +495,6 @@ export interface SealedToolDefinition {
   readonly name: string
   readonly description: string
   readonly parameters: unknown
-  readonly presentation: 'native' | 'both'
   readonly output: SealedToolOutputDefinition
   execute(args: unknown, exec: SealedToolRunContextLike): Promise<unknown>
 }
@@ -494,7 +589,6 @@ function buildToolOptions(spec: SealedScriptSpec, deps: SealedScriptDeps): Seale
         description: 'Optional input passed to the sealed script as an argv element.',
       },
     },
-    presentation: 'native',
     output: {
       schema: RESULT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: renderSealedScriptResult(value) }],

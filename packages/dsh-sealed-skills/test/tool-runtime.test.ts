@@ -7,11 +7,13 @@ import {
   createSealedScriptTools,
   executeSealedScript,
   inferSealedScriptRuntime,
+  leaksSealedSource,
   loadDefineTool,
   parseSealedScriptEntryId,
   registerSealedScriptTools,
   renderSealedScriptResult,
   sealedScriptArgv,
+  sealedScriptProgram,
   sealedScriptToolName,
   SealedScriptToolError,
   SEALED_SCRIPT_MAX_OUTPUT_BYTES,
@@ -21,6 +23,7 @@ import {
   type SandboxPolicy,
   type SealedChildProcessLike,
   type SealedScriptDeps,
+  type SealedScriptResult,
   type SealedScriptSpec,
   type SealedScriptToolOptions,
   type SealedSpawnLike,
@@ -67,7 +70,9 @@ function fakeSpawn(options: FakeSpawnOptions = {}): { spawn: SealedSpawnLike; ca
     const child = {
       stdin: {
         end(value?: unknown): void {
-          call.stdin = value === undefined ? undefined : Buffer.from(value as Buffer).toString('utf8')
+          call.stdin = value === undefined
+            ? undefined
+            : (Buffer.isBuffer(value) ? value.toString('utf8') : String(value))
           if (options.emitError !== undefined) {
             for (const listener of errors) listener(new Error(options.emitError))
             return
@@ -124,7 +129,8 @@ describe('executeSealedScript — source never leaves stdin', () => {
     expect(calls[0].command).toBe('node')
     expect(calls[0].args).toEqual(['--input-type=module', '-', 'hola'])
     expect(calls[0].cwd).toBe('/workspace')
-    expect(calls[0].stdin).toBe(SOURCE)
+    expect(calls[0].stdin).toBe(sealedScriptProgram('node', SOURCE))
+    expect(calls[0].stdin).toContain(SOURCE)
 
     const argvText = [calls[0].command, ...calls[0].args].join(' ')
     expect(argvText).not.toContain('export const n')
@@ -166,7 +172,7 @@ describe('executeSealedScript — source never leaves stdin', () => {
     }
   })
 
-  it('fails closed when confine returns a non-enforcing result instead of silently running', async () => {
+  it('refuses an empty argv from confine instead of silently running', async () => {
     const { spawn, calls } = fakeSpawn()
     const result = await executeSealedScript(baseDeps({
       spawn,
@@ -174,6 +180,31 @@ describe('executeSealedScript — source never leaves stdin', () => {
     }), SPEC)
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('sandbox-unavailable')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('refuses a non-string argv element from confine', async () => {
+    const { spawn, calls } = fakeSpawn()
+    const result = await executeSealedScript(baseDeps({
+      spawn,
+      confine: async () => ({ argv: ['node', 7], enforcement: 'full' }) as unknown as ConfinedArgv,
+    }), SPEC)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('sandbox-unavailable')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('refuses a partial-enforcement confinement (conservative, never a weaker boundary)', async () => {
+    const { spawn, calls } = fakeSpawn()
+    const result = await executeSealedScript(baseDeps({
+      spawn,
+      confine: async (argv) => ({ argv: [...argv], enforcement: 'partial' }),
+    }), SPEC)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('sandbox-not-enforcing')
+      expect(result.message).not.toContain('export const n')
+    }
     expect(calls).toHaveLength(0)
   })
 
@@ -224,6 +255,34 @@ describe('executeSealedScript — source never leaves stdin', () => {
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.reason).toBe('aborted')
     expect(read).toBe(false)
+  })
+
+  it('withholds a stdout that echoes a source line (injected canary, detector proof)', async () => {
+    const { spawn } = fakeSpawn({ stdout: 'preamble\n' + SOURCE.trim() + '\nmore\n' })
+    const result = await executeSealedScript(baseDeps({ spawn }), SPEC)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('output-redacted')
+      expect(result.message).not.toContain('export const n')
+      expect('stdout' in result).toBe(false)
+      expect('stderr' in result).toBe(false)
+    }
+    expect(renderSealedScriptResult(result)).not.toContain('export const n')
+  })
+
+  it('withholds a stderr that echoes a source window', async () => {
+    const { spawn } = fakeSpawn({ stderr: 'oops\n' + SOURCE.slice(0, 40) + '\n' })
+    const result = await executeSealedScript(baseDeps({ spawn }), SPEC)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('output-redacted')
+  })
+
+  it('leaksSealedSource only fires on real source material', () => {
+    expect(leaksSealedSource('nothing here', SOURCE)).toBe(false)
+    expect(leaksSealedSource('x' + SOURCE.trim() + 'y', SOURCE)).toBe(true)
+    expect(leaksSealedSource(SOURCE.slice(0, 40), SOURCE)).toBe(true)
+    expect(leaksSealedSource('a short line', 'a\n')).toBe(false)
+    expect(leaksSealedSource('stderr text', SOURCE)).toBe(false)
   })
 
   it('reports output-limit when the child floods a stream', async () => {
@@ -292,22 +351,22 @@ describe('tool definition production', () => {
         name: options.name,
         description: options.description,
         parameters: options.parameters,
-        presentation: options.presentation,
         output: options.output,
         execute: options.execute,
       }
     }
   }
 
-  it('declares presentation "native" (never ptc) and delegates to the sandboxed core', async () => {
+  it('registers under sealed_script_* (never run_code) and delegates to the sandboxed core', async () => {
     const captured: SealedScriptToolOptions[] = []
     const { spawn, calls } = fakeSpawn({ stdout: 'translated' })
     const tool = await buildSealedScriptTool(SPEC, baseDeps({ spawn }), fakeDefineTool(captured))
 
     expect(tool.name).toBe(SEALED_SCRIPT_TOOL_PREFIX + 'translate_run_mjs')
     expect(tool.name).not.toBe('run_code')
-    expect(captured[0].presentation).toBe('native')
-    expect((captured[0] as { mode?: unknown }).mode).toBeUndefined()
+    // dsh DefineToolOptions has no presentation/mode field; we must not pass a dead key.
+    expect('presentation' in captured[0]).toBe(false)
+    expect('mode' in captured[0]).toBe(false)
     expect(captured[0].description).toContain('translate')
 
     const value = await tool.execute({ input: 'hola' }, { signal: new AbortController().signal })
@@ -325,7 +384,7 @@ describe('tool definition production', () => {
   it('createSealedScriptTools skips an unbuildable spec without taking down the rest', async () => {
     const define: DefineToolLike = (options) => {
       if (options.name.includes('bad')) throw new Error('bad schema')
-      return { name: options.name, description: options.description, parameters: options.parameters, presentation: options.presentation, output: options.output, execute: options.execute }
+      return { name: options.name, description: options.description, parameters: options.parameters, output: options.output, execute: options.execute }
     }
     const bad: SealedScriptSpec = { ...SPEC, entryId: 'script:translate:bad.mjs' }
     const tools = await createSealedScriptTools([SPEC, bad], baseDeps(), define)
@@ -359,7 +418,7 @@ describe('registration', () => {
     const { tools, names, disposed } = fakeRuntime()
     const dispose = await registerSealedScriptTools(tools, [SPEC, OTHER], baseDeps(), async (options) => ({
       name: options.name, description: options.description, parameters: options.parameters,
-      presentation: options.presentation, output: options.output, execute: options.execute,
+      output: options.output, execute: options.execute,
     }))
     expect(names).toEqual([SEALED_SCRIPT_TOOL_PREFIX + 'translate_run_mjs', SEALED_SCRIPT_TOOL_PREFIX + 'translate_extra_py'])
     dispose()
@@ -378,7 +437,7 @@ describe('registration', () => {
     }
     const define: DefineToolLike = (options) => ({
       name: options.name, description: options.description, parameters: options.parameters,
-      presentation: options.presentation, output: options.output, execute: options.execute,
+      output: options.output, execute: options.execute,
     })
     const dispose = await registerSealedScriptTools(tools, [SPEC, OTHER], baseDeps(), define, (message) => warnings.push(message))
     expect(registrations).toBe(2)
@@ -409,15 +468,32 @@ describe('registration', () => {
 })
 
 describe('real child process (node --input-type=module -)', () => {
+  const REAL_SPEC: SealedScriptSpec = {
+    ...SPEC,
+    policy: { mode: 'read-only', workspaceRoot: process.cwd() },
+    timeoutMs: 20_000,
+  }
+
+  function runReal(source: string, argv: readonly string[] = []): Promise<SealedScriptResult> {
+    return executeSealedScript(
+      {
+        readEntry: async () => Buffer.from(source),
+        confine: async (confined): Promise<ConfinedArgv> => ({ argv: [...confined], enforcement: 'full' }),
+      },
+      REAL_SPEC,
+      argv,
+    )
+  }
+
   it('executes the stdin program as ESM, receives the argument on argv, and zeroizes the source', async () => {
     const source = 'export const n = 41\nconsole.log(JSON.stringify({ n: n + 1, arg: process.argv[2] }))\n'
     const buffer = Buffer.from(source)
     const result = await executeSealedScript(
       {
         readEntry: async () => buffer,
-        confine: async (argv): Promise<ConfinedArgv> => ({ argv: [...argv], enforcement: 'full' }),
+        confine: async (confined): Promise<ConfinedArgv> => ({ argv: [...confined], enforcement: 'full' }),
       },
-      { ...SPEC, policy: { mode: 'read-only', workspaceRoot: process.cwd() }, timeoutMs: 20_000 },
+      REAL_SPEC,
       ['hello'],
     )
     expect(result.ok).toBe(true)
@@ -426,6 +502,59 @@ describe('real child process (node --input-type=module -)', () => {
       expect(JSON.parse(result.stdout)).toEqual({ n: 42, arg: 'hello' })
     }
     expect(buffer.every((byte) => byte === 0)).toBe(true)
+  })
+
+  it('leaves a normal successful script unaffected by the prelude', async () => {
+    const result = await runReal('console.log(2 + 40)\n')
+    expect(result).toEqual({ ok: true, stdout: '42\n', stderr: '', exitCode: 0 })
+  })
+
+  it('keeps import declarations working after the prelude', async () => {
+    const result = await runReal("import { sep } from 'node:path'\nconsole.log(sep.length > 0)\n")
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.stdout.trim()).toBe('true')
+      expect(result.exitCode).toBe(0)
+    }
+  })
+
+  it('keeps a runtime throw body-free (prelude replaces the code frame)', async () => {
+    const canary = 'CANARY-throw-line-do-not-log-1234567890'
+    const source = 'const KEY = "' + canary + '"\nthrow new Error("boom")\n'
+    const result = await runReal(source)
+    expect(JSON.stringify(result)).not.toContain(canary)
+    expect(renderSealedScriptResult(result)).not.toContain(canary)
+    // The prelude turns the throw into a fixed, body-free diagnostic with exit 1.
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('diagnostics were withheld')
+      expect(result.stderr).not.toContain('KEY')
+      expect(result.stdout).toBe('')
+    }
+  })
+
+  it('refuses a SYNTAX error whose code frame echoes a source line', async () => {
+    const canary = 'CANARY-syntax-line-do-not-log-1234567890'
+    const source = 'const x = 1\nconst ' + canary + ' = = 2\n'
+    const result = await runReal(source)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('output-redacted')
+      expect(result.message).not.toContain(canary)
+    }
+    expect(JSON.stringify(result)).not.toContain(canary)
+    expect(renderSealedScriptResult(result)).not.toContain(canary)
+  })
+
+  it('refuses a script that deliberately prints a >=32-char literal from its own source', async () => {
+    const canary = 'CANARY-intentional-echo-1234567890ABCDEF'
+    const source = 'process.stdout.write("' + canary + '\n")\n'
+    const result = await runReal(source)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('output-redacted')
+    expect(JSON.stringify(result)).not.toContain(canary)
+    expect(renderSealedScriptResult(result)).not.toContain(canary)
   })
 })
 
