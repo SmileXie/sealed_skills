@@ -420,7 +420,7 @@ git commit -m "feat(pack-format): add entry key derivation and AEAD"
 import { generateKeyPairSync } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_ENTRY_BYTES, PackFormatError, readContainer, signManifest, verifyManifestSignature, writeContainer,
+  MAX_ENTRY_BYTES, readContainer, signManifest, verifyManifestSignature, writeContainer,
 } from '../src/index.js'
 import type { PackManifest } from '../src/index.js'
 
