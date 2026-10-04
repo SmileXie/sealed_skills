@@ -79,12 +79,12 @@ Doc `surface.d.ts:28-35`: "Validate the complete durable decision before returni
 
 The projecting event's **own seq is not added to `nodes`** ⇒ it is log-only; it never becomes a message by itself.
 
-**Can a projection supply plaintext while the durable log holds ciphertext? Yes — with this exact shape.**
+**Can a projection supply plaintext while the durable log holds only a placeholder? Yes — with this exact shape.**
 
 - A projection may only **rewrite the derived `Message` of an already-committed message-producing seq** (keyed by that seq); it cannot mint a new surface node.
-- It receives `context.events`, so it can read the ciphertext blocks out of the durable `tool/result`/`user/message` event. It returns `Map{ <that seq> => freezeMessage({ ...original, content: plaintextBlocks }) }`, preserving `message.id`.
-- Trigger: the plugin appends its own marker event (e.g. `sealed/redacted`) after the ciphertext message; the projection registered for `sealed/redacted` rewrites the earlier seq. `deriveMessages()` (`lib/types/index.d.ts:303`) then returns plaintext to the model while the log keeps ciphertext.
-- **Limitation to design around:** the rewrite is re-applied on replay only if the projection definition is supplied to restore (`Session.fromRestore(…, projections)`, `index.d.ts:171`; the store passes `this.projections`, `lib/index.js:1691,1710`). If the plugin is absent on restore, `deriveMessages()` silently yields the **ciphertext** copy. `lib/index.js:580-581` throws if a *used* projection was removed: `session message projection "X" was removed or replaced; restore the session with its owning plugin`.
+- It receives `context.events`, so it can read the placeholder blocks out of the durable `tool/result`/`user/message` event. It returns `Map{ <that seq> => freezeMessage({ ...original, content: plaintextBlocks }) }`, preserving `message.id`.
+- Trigger: the plugin appends its own marker event (e.g. `sealed/redacted`) after the placeholder message; the projection registered for `sealed/redacted` rewrites the earlier seq. `deriveMessages()` (`lib/types/index.d.ts:303`) then returns plaintext to the model while the log keeps only the placeholder.
+- **Limitation to design around:** the rewrite is re-applied on replay only if the projection definition is supplied to restore (`Session.fromRestore(…, projections)`, `index.d.ts:171`; the store passes `this.projections`, `lib/index.js:1691,1710`). If the plugin is absent on restore, `deriveMessages()` silently yields the **placeholder** copy. `lib/index.js:580-581` throws if a *used* projection was removed: `session message projection "X" was removed or replaced; restore the session with its owning plugin`.
 
 **Registration API.** `lib/types/index.d.ts:339-347`:
 
@@ -121,8 +121,8 @@ return { name: skill.name, provider: skill.provider,
 
 **Provider influence.** `renderSkillContent` takes `Pick<SkillDefinition,'name'|'provider'|'resourceBase'|'content'>` (`dsh-skill` `index.d.ts:143`). The provider decides the *body text*, but **the `tool-skill` plugin decides to write it** — a third-party provider cannot suppress the write. Viable designs:
 
-1. **Sealed-aware tool plugin (recommended for M3):** register the skill in dsh's catalog but make the body ciphertext/placeholder, then a session projection restores plaintext only in the derived view.
-2. **Tool-level redaction:** `ToolDefinition.finalizeContent` runs "immediately before lossless materialization" (`dsh-tools` `index.d.ts:139-150`); `projectContent` "installs execution-prepared content before `tools/post-execute` policies" (`index.d.ts:129-138`). These can substitute ciphertext for the **durable** copy — but they are properties of *the tool definition* (i.e. `dsh-tool-skill`'s), which we do not own unless we register our own skill tool.
+1. **Sealed-aware tool plugin (recommended for M3):** register the skill in dsh's catalog but make the body a placeholder, then a session projection restores plaintext only in the derived view.
+2. **Tool-level redaction:** `ToolDefinition.finalizeContent` runs "immediately before lossless materialization" (`dsh-tools` `index.d.ts:139-150`); `projectContent` "installs execution-prepared content before `tools/post-execute` policies" (`index.d.ts:129-138`). These can substitute a placeholder for the **durable** copy — but they are properties of *the tool definition* (i.e. `dsh-tool-skill`'s), which we do not own unless we register our own skill tool.
 3. Registering a projection for `tool/result` is technically allowed (`registerMessageProjection` only rejects a type already owned) and would let one plugin rewrite *every* tool result's derived content — powerful but globally invasive; flagged, not recommended.
 
 ---
@@ -179,7 +179,7 @@ readonly inject?: Inject;
 - `InvariantFailure = (message: string) => never` (`:20-25`); `fail(msg)` throws `InvariantError(packageName, msg)` with `code: 'INVARIANT'` (`:38-50`).
 - Config — `index.d.ts:11-19`: `{ enabled?: boolean /* default true */; package_allowlist?: string[]; package_blocklist?: string[] }` — case-sensitive JS regex sources matched against the package name ("empty admits all"); blocklist applied after allowlist. Declared via `static Config: Schema<Config>` (`:58`).
 - In-tree use pattern (register beside `dsh-invariants` as a `./invariant` companion): `@deepseek-ai/dsh-session` `lib/types/invariant.d.ts:1-17` exports `name = 'session-invariant'`, `inject`, `apply: (ctx) => Promise<() => void>`.
-- For "no plaintext in persisted state": register our package with an installer that (a) `inject`s the session/persistence services and (b) subscribes to `session/event` (or wraps the persistence backend) asserting ciphertext-only, calling `fail(...)` on a violation. The child-fiber + `fail` design means a violation tears down just our registration.
+- For "no plaintext in persisted state": register our package with an installer that (a) `inject`s the session/persistence services and (b) subscribes to `session/event` (or wraps the persistence backend) asserting no sealed plaintext (placeholder-only), calling `fail(...)` on a violation. The child-fiber + `fail` design means a violation tears down just our registration.
 
 ---
 
@@ -265,7 +265,7 @@ Baseline in our repo: `packages/dsh-sealed-skills/src/provider.ts` re-declares t
 
 ## Key takeaways for M3
 
-- **The log-mask seam exists and is workable**: ciphertext in the durable `tool/result`/`user/message`, plaintext supplied by a `SessionMessageProjection` keyed on a plugin-owned `ignorable` event type. The projection must preserve `message.id` and must be re-supplied on restore (`registerMessageProjection` → `SessionStore.projections` → `fromRestore`).
+- **The log-mask seam exists and is workable**: a placeholder in the durable `tool/result`/`user/message`, plaintext supplied by a `SessionMessageProjection` keyed on a plugin-owned `ignorable` event type. The projection must preserve `message.id` and must be re-supplied on restore (`registerMessageProjection` → `SessionStore.projections` → `fromRestore`).
 - **The skill body currently lands in the log in plaintext on two paths** (tool result + `/name` injection) via `renderSkillContent`; a sealed build must intercept both, which means registering our own skill tool or a `tool/result`-level projection.
 - **Add a load-time compat gate**: our package must declare `peerDependencies` on `@deepseek-ai/dsh*` for 0.2.0-rc.2 or app-boot will skip it.
 - **`SkillService`→`SkillRegistry` and `SkillSummary.path?` are the only skill-seam drifts**; neither breaks our code, but both should be reflected in `provider.ts`/`plugin.ts` comments and `docs/sealed-skills/notes/dsh-skill-provider.md`.
@@ -274,7 +274,7 @@ Baseline in our repo: `packages/dsh-sealed-skills/src/provider.ts` re-declares t
 
 ## 9. 已在本机核实（Task 1）
 
-Task 1 用本机真实安装的 `@deepseek-ai/dsh@0.2.0-rc.2`（`%TEMP%\dsh-recon-20261004144816\boot\node_modules`；`node node_modules\@deepseek-ai\dsh\lib\bin.js --version` → `0.2.0-rc.2`）逐条核对了 §1 里"尚未定论"的三件事。**下表为权威值**：Task 4/6 只能使用这里核实过的名称/说明符。
+Task 1 用本机真实安装的 `@deepseek-ai/dsh@0.2.0-rc.2`（`%TEMP%\dsh-recon-20261004144816\boot\node_modules`；`node node_modules\@deepseek-ai\dsh\lib\bin.js --version` → `0.2.0-rc.2`）逐条核对了 §1/§5 里"尚未定论"的契约。**下表为权威值**：Task 4/5/6 只能使用这里核实过的名称、说明符与契约（Task 6 的 invariants 契约见 §9.6）。
 
 ### 9.1 会话服务名 = `sessions`（不是 `session`）
 
@@ -302,3 +302,22 @@ Task 1 用本机真实安装的 `@deepseek-ai/dsh@0.2.0-rc.2`（`%TEMP%\dsh-reco
 - 实现：`@deepseek-ai/dsh-app-boot/lib/index.js:286-302` `evaluatePluginCompatibility()`：只读 `package.json` 的 `peerDependencies`（`:289-290`），仅检查名字为 `@deepseek-ai/dsh` 或 `@deepseek-ai/dsh-*` 的 peer（`:294`），用 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })` 判定（`:300`）；**不读 `peerDependenciesMeta`**。
 - 结论：把 dsh peer 声明成 `optional`（让 pnpm 不自动安装、未装 dsh 也能 build/test）**不会**让兼容门漏检；peer 的名字/范围仍照抄同仓插件（dsh 包 `0.2.0-rc.2`、cordis `~4.0.4`）。
 - 我们声明的 peer（`packages/dsh-sealed-skills/package.json`）：`@deepseek-ai/cordis` `~4.0.4`，以及 `dsh-skill`/`dsh-session`/`dsh-tools`/`dsh-sandbox`/`dsh-invariants` 均 `0.2.0-rc.2`（全部 `optional: true`）。
+
+### 9.5 会话追加契约与可重入禁令（Task 5 触发方式据此）
+
+- 追加签名：`append<T extends SessionEventType>(type: T, data: SessionEventMap[T], ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent<T>] : []): SessionEvent<T>;` —— `@deepseek-ai/dsh-session/lib/types/index.d.ts:246`。
+- 监听形状：`'session/event'(this: Scoped<Session>, session: Session, event: SessionEvent): void;` —— `index.d.ts:64`（`@mode emit`；监听器正是这样拿到 `session` 实例）。
+- **可重入禁令（关键，Task 5 必读）**：`append` 在另一个 append 正在发布期间会**拒绝**：
+  - 运行时：`lib/index.js:1452` —— `throw new Error("session append cannot reenter while another append is being published")`。
+  - 顺序：`entry.appending = true` 在 `:1462`；`session/event` 观察者在 `:1473`（`invokeContainedSessionObservers`）被调用，**早于** `finally` 里的清位（`:1477` `entry.appending = false`）⇒ 在 `session/event` 回调里**同步**调用 `append` 必然抛错。
+  - 文档：`index.d.ts:242-244` —— "an append reentered while this acceptance/publication boundary is open also rejects before the log changes"。
+- **安全策略（非重入）**：marker 事件必须在发布边界之外追加 —— 例如把 `append` 放进 `queueMicrotask(...)`（或等价的后提交钩子），或改用本计划 §3.1 的兜底（自己注册 `sealed_skill` 工具）。
+- **失败模式（fail-safe）**：同步重入会抛错、marker 写不进日志，投影因而不会执行 ⇒ 模型只会看到**占位符**、**不会泄漏明文**；代价是技能在该次调用中不可用（占位符对模型可见），而不是明文落盘。Task 5 必须同时覆盖"重入被拒绝"与"延后追加成功"两条路径。
+
+### 9.6 `ctx.invariants` 注册契约（Task 6 据此）
+
+- 服务名：`declare module '@deepseek-ai/cordis' { interface Context { invariants: InvariantRegistry } }` —— `@deepseek-ai/dsh-invariants/lib/types/index.d.ts:51-53`；运行时 `super(ctx, "invariants")` —— `lib/index.js:60`。
+- 注册签名：`register(packageName: string, installer: InvariantInstaller): () => void;` —— `index.d.ts:80`；运行时 `lib/index.js:80`，在 `ctx.effect(async () => { … }, \`invariants.register(${JSON.stringify(packageName)})\`)`（`:88`、`:114`）内安装 ⇒ 返回 **fiber-owned disposer**。`packageName` 须非空、无空白、未被注册过（否则抛错，`:81-82`）。
+- 安装器形状：`interface InvariantInstaller { (ctx: Context, fail: InvariantFailure): void | Promise<void>; readonly inject?: Inject; }` —— `index.d.ts:27-37`（调用签名 `:34`，可选 `inject` `:36`）。安装器运行在**子 fiber**（`lib/index.js:96` `ctx.plugin(...)`）；失败只拆除该注册。
+- `InvariantFailure = (message: string) => never` —— `index.d.ts:25`；运行时实现 `(message) => { throw new InvariantError(packageName, message) }` —— `lib/index.js:92-94`；`InvariantError.code === "INVARIANT"` —— `index.d.ts:41`。
+- 结论：Task 6 用 `ctx.invariants.register('<pkg>', (ctx, fail) => { … })`；违规时调用 `fail('…')` 即拆掉本注册，不影响其他插件。
