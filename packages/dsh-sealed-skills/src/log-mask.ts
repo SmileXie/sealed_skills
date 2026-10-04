@@ -19,7 +19,8 @@ import {
 // @returns changed current messages keyed by their original sequences.
 //   lib/index.js:422-470  a projecting event's own seq is NOT added to `nodes` (log-only); only
 //   already-committed message seqs may be rewritten.
-//   lib/types/index.d.ts:246 `append(...)`, and surrogate `ignorable` compatibility per types.d.ts:497-507.
+//   lib/types/index.d.ts:246 `append(...)`. `append` cannot set `ignorable`, so `sealed/redacted`
+//   is registered into `KNOWN_SESSION_EVENT_TYPES` at apply time (section 9.7; see plugin.ts).
 
 export type SealedSeq = number
 
@@ -44,11 +45,13 @@ export interface SealedProjectionContext {
   readonly messages: ReadonlyMap<SealedSeq, SealedMessage>
 }
 
-/** The subset of the marker envelope a projection needs (the real event carries seq/time too). */
+/**
+ * The subset of the marker envelope a projection needs (the real event carries seq/time too).
+ * No `ignorable`: dsh 0.2.x `append` cannot set it and the real snapshot omits it (section 9.7).
+ */
 export interface SealedRedactedEvent {
   readonly type: string
   readonly data: SealedRedactedData
-  readonly ignorable?: true
 }
 
 /** The subset of a durable source event the projection reads (parity with dsh `image/offload`). */

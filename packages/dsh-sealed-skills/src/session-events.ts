@@ -4,10 +4,18 @@ import { randomBytes } from 'node:crypto'
  * `sealed/redacted` — the log-mask marker session event.
  *
  * A skill body is persisted ONLY as an unguessable placeholder. After the message carrying the
- * placeholder is committed, the plugin appends this marker (`ignorable: true`) so a registered
- * message projection can rewrite the derived `Message` back to plaintext for the model while the
- * durable log keeps only the placeholder. Task 4 ships the event shape, the placeholder
- * codec and the projection; appending the marker on the two landing paths is Task 5.
+ * placeholder is committed, the plugin appends this marker so a registered message projection can
+ * rewrite the derived `Message` back to plaintext for the model while the durable log keeps only
+ * the placeholder. Task 4 ships the event shape, the placeholder codec and the projection;
+ * appending the marker on the two landing paths is Task 5.
+ *
+ * The marker is appended WITHOUT `ignorable`: dsh 0.2.x `session.append` builds the event envelope
+ * itself (`dsh-session/lib/index.js:1448-1457`) and its `...opts` only carries surface metadata, so
+ * a non-surface event cannot set `ignorable`. The plugin instead registers this type into dsh's
+ * exported `KNOWN_SESSION_EVENT_TYPES` at apply time (`registerDshSessionEventType()` in
+ * `plugin.ts`), the Set the persistence read path consults. Cost: a harness WITHOUT this plugin
+ * refuses to reconstruct the whole log instead of degrading to the placeholder copy. See
+ * `docs/sealed-skills/notes/dsh-0.2-seams.md` section 9.7.
  *
  * The augmentation below is emitted verbatim into `dist/session-events.d.ts`. In a consumer that
  * has the real `@deepseek-ai/dsh-session` it is a module AUGMENTATION and merges with the in-tree
@@ -18,7 +26,8 @@ import { randomBytes } from 'node:crypto'
  *  - `:435`  `export type SessionEventType = keyof SessionEventMap;`
  *  - `:489-512` `SessionEvent<T> = { type; seq; time; data; ignorable?: true }`
  *  - `:497-507` a reader meeting an unrecognized type WITHOUT `ignorable: true` MUST refuse to
- *    reconstruct the session — hence a pure marker is always written with `ignorable: true`.
+ *    reconstruct the session. Our event cannot set `ignorable`, so the type is made known through
+ *    the runtime registry described above (section 9.7).
  */
 declare module '@deepseek-ai/dsh-session/types' {
   interface SessionEventMap {
@@ -26,7 +35,7 @@ declare module '@deepseek-ai/dsh-session/types' {
   }
 }
 
-/** Session event type name. Owned by this package; never a required (non-ignorable) event. */
+/** Session event type name. Owned by this package; the type is registered at apply time (section 9.7). */
 export const SEALED_REDACTED = 'sealed/redacted' as const
 
 /**

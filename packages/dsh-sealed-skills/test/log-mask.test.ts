@@ -67,7 +67,8 @@ function contextOf(
 }
 
 function marker(refSeq: number, token: string, entryId: string = ENTRY) {
-  return { type: SEALED_REDACTED, data: sealedRedactedData(refSeq, entryId, token), ignorable: true as const }
+  // No `ignorable`: dsh 0.2.x `append` cannot set it and the real snapshot omits it (section 9.7).
+  return { type: SEALED_REDACTED, data: sealedRedactedData(refSeq, entryId, token) }
 }
 
 function deepFreeze<T>(value: T): T {
