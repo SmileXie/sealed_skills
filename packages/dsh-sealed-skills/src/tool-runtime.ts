@@ -67,6 +67,15 @@ export const SEALED_SCRIPT_LEAK_WINDOW_STEP = 8
 export const SEALED_SCRIPT_LEAK_MAX_WINDOWS = 8192
 
 /**
+ * Node only prints an `[evalN]:<line>` locator when it echoes script context (a code frame, or a
+ * stdin/eval stack frame). That STRUCTURAL signal refuses ANY frame regardless of how short the
+ * echoed source line is, closing the <= 15-char false negative that line/window matching alone
+ * left open. Conservative: a script that quotes the literal `[eval1]:1` in ordinary output is also
+ * refused (documented false positive).
+ */
+export const SEALED_SCRIPT_CODE_FRAME_PATTERN = /(?:^|\n)\s*(?:at\s+)?\S*?\[eval\d+\]:\d+/
+
+/**
  * True when a child stream (stdout or stderr) echoes sealed SOURCE material. Deliberately
  * conservative: a false positive only withholds output, a false negative would put source into the
  * model context and the durable session log, where neither the log-mask nor the plaintext sentinel
@@ -77,9 +86,14 @@ export const SEALED_SCRIPT_LEAK_MAX_WINDOWS = 8192
  *  - WINDOW signature: any contiguous {@link SEALED_SCRIPT_LEAK_WINDOW_MIN}-char source window that
  *    appears in the output (catches whitespace-normalized or partial echoes), scanning at most
  *    {@link SEALED_SCRIPT_LEAK_MAX_WINDOWS} starts.
+ *  - STRUCTURAL signature: a Node code-frame/stack locator ({@link SEALED_SCRIPT_CODE_FRAME_PATTERN}),
+ *    which Node only emits when echoing script context — so it refuses frames whose echoed line is
+ *    shorter than {@link SEALED_SCRIPT_LEAK_LINE_MIN}.
  */
 export function leaksSealedSource(output: string, sourceText: string): boolean {
-  if (output.length === 0 || sourceText.length === 0) return false
+  if (output.length === 0) return false
+  if (SEALED_SCRIPT_CODE_FRAME_PATTERN.test(output)) return true
+  if (sourceText.length === 0) return false
   for (const rawLine of sourceText.split('\n')) {
     const line = rawLine.trim()
     if (line.length >= SEALED_SCRIPT_LEAK_LINE_MIN && output.includes(line)) return true
@@ -98,17 +112,24 @@ export function leaksSealedSource(output: string, sourceText: string): boolean {
  * (a code frame containing the offending source line) with a fixed, body-free line, so an ordinary
  * runtime throw or unhandled rejection cannot leak the source. SYNTAX errors fail before it runs,
  * which is why {@link leaksSealedSource} remains the authoritative gate.
+ * The handlers TERMINATE promptly (`process.exit(1)`) instead of only setting the exit code: after
+ * Node runs an installed `uncaughtException` handler the loop would otherwise keep running, so a
+ * script holding a live handle (e.g. `setInterval`) would hang until the tool timeout. A
+ * best-effort `process.stderr.write` runs first (probe-verified never truncated on this host).
+ *
  * Probe-verified on Node v24.14.1: normal scripts are unaffected; `import` declarations after the
- * prelude still hoist correctly.
+ * prelude still hoist correctly; a throw with a live interval exits in ~60 ms with code 1.
  */
 export const SEALED_SCRIPT_NODE_PRELUDE = [
   "process.on('uncaughtException', () => {",
   '  process.exitCode = 1',
   "  process.stderr.write('[sealed-script] the sealed script threw; its diagnostics were withheld\\n')",
+  '  process.exit(1)',
   '})',
   "process.on('unhandledRejection', () => {",
   '  process.exitCode = 1',
   "  process.stderr.write('[sealed-script] the sealed script rejected; its diagnostics were withheld\\n')",
+  '  process.exit(1)',
   '})',
   '',
 ].join('\n')

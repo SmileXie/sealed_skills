@@ -285,6 +285,16 @@ describe('executeSealedScript — source never leaves stdin', () => {
     expect(leaksSealedSource('stderr text', SOURCE)).toBe(false)
   })
 
+  it('treats any Node [evalN] code-frame locator as a leak (structural rule)', () => {
+    // Node only emits an [evalN]:<line> locator when it echoes script context, so this rule refuses
+    // even an echoed line far below the 16-char threshold (a short syntax-error line).
+    expect(leaksSealedSource('file:///tmp/[eval1]:6\nconst x = = 2\n', 'x')).toBe(true)
+    expect(leaksSealedSource('    at file:///tmp/[eval3]:12:1\n', 'x')).toBe(true)
+    expect(leaksSealedSource('[eval1]:1\n', 'x')).toBe(true)
+    expect(leaksSealedSource('no locator here', 'x')).toBe(false)
+    expect(leaksSealedSource('', 'x')).toBe(false)
+  })
+
   it('reports output-limit when the child floods a stream', async () => {
     const { spawn } = fakeSpawn({ stdout: 'x'.repeat(SEALED_SCRIPT_MAX_OUTPUT_BYTES + 1) })
     const result = await executeSealedScript(baseDeps({ spawn }), SPEC)
@@ -555,6 +565,56 @@ describe('real child process (node --input-type=module -)', () => {
     if (!result.ok) expect(result.reason).toBe('output-redacted')
     expect(JSON.stringify(result)).not.toContain(canary)
     expect(renderSealedScriptResult(result)).not.toContain(canary)
+  })
+
+  it('refuses a SHORT (<=15-char) syntax-error line via the structural code-frame rule', async () => {
+    // The offending line here is only 12 chars trimmed: the >=16-char line rule and the 32-char
+    // window rule both miss it, so only the structural [evalN] signal can catch Node's code frame.
+    const canary = 'SECRET2'
+    const result = await runReal('"' + canary + '" = 1\n')
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toBe('output-redacted')
+      expect(result.message).not.toContain(canary)
+    }
+    expect(JSON.stringify(result)).not.toContain(canary)
+    expect(renderSealedScriptResult(result)).not.toContain(canary)
+  })
+
+  it('keeps a SHORT-line runtime ReferenceError body-free (prelude catches it first)', async () => {
+    const canary = 'SECRET3'
+    const result = await runReal(canary + '\n')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('diagnostics were withheld')
+      expect(result.stdout).toBe('')
+    }
+    expect(JSON.stringify(result)).not.toContain(canary)
+    expect(renderSealedScriptResult(result)).not.toContain(canary)
+  })
+
+  it('conservatively refuses a NORMAL script that prints a literal [evalN]:<line> locator', async () => {
+    // Documented conservative false positive: the structural rule cannot tell a real Node code-frame
+    // locator from a script that prints one. Withholding output is the fail-closed choice.
+    const result = await runReal('console.log("[eval1]:1")\n')
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toBe('output-redacted')
+    expect(JSON.stringify(result)).not.toContain('[eval1]:1')
+    expect(renderSealedScriptResult(result)).not.toContain('[eval1]:1')
+  })
+
+  it('exits promptly when a throwing script holds a live handle (no timeout hang)', async () => {
+    // Regression for I2: the prelude handlers must terminate, not merely set exitCode, or a live
+    // handle (setInterval) keeps the loop alive until the tool timeout.
+    const started = Date.now()
+    const result = await runReal('setInterval(() => {}, 1000)\nthrow new Error("boom")\n')
+    const elapsed = Date.now() - started
+    expect(elapsed).toBeLessThan(2000)
+    const timedOut = !result.ok && result.reason === 'timeout'
+    expect(timedOut).toBe(false)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.exitCode).toBe(1)
   })
 })
 
