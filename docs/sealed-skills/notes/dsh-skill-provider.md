@@ -98,12 +98,17 @@ fatal: unable to access 'https://github.com/deepseek-ai/deepseek-harness/': Recv
 
 ```ts
 {
-  mounts: [{ packPath, licensePath, authorPublicKeyB64 }],
-  trustedLicenseKeysB64: string[],
-  keystoreDir?: string,   // 默认 $SEALED_HOME 或 <cwd>/.sealed-home
+  mounts: [{ packPath, licensePath?, purchaseToken?, trial? }],   // 作者公钥不再由调用方给出
+  trustedLicenseKeysB64: string[],   // 服务器 license 签名公钥（base64url raw Ed25519）
+  serverUrl?: string,                // 默认 $SEALED_SERVER_URL
+  serverProofPubB64?: string,        // 默认 $SEALED_SERVER_PROOF_PUB
+  keystoreDir?: string,              // 默认 $SEALED_HOME 或 <cwd>/.sealed-home
   rank?: number,
 }
 ```
+
+每个 mount 或者给 `licensePath`（离线导入的预置 license），或者给 `purchaseToken` / `trial`
+（在线激活）。pack 的作者公钥只从已签名 license 的 `pack.author_pub` 读取，调用方无法覆盖。
 
 我们**刻意不 import** `@deepseek-ai/dsh-skill` / `@deepseek-ai/cordis`，而是在 `provider.ts` 里做**结构化
 重声明**（duck typing），使该包不依赖 dsh、且适配层可独立单测。这是与 dsh 官方类型的**有意差异**：

@@ -5,6 +5,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": { "build": "tsc -p tsconfig.json", "test": "vitest run" },
+  "devDependencies": {
+    "@sealed/license-server": "workspace:*"
+  },
   "dependencies": {
     "@sealed/pack-format": "workspace:*",
     "@sealed/license-format": "workspace:*"

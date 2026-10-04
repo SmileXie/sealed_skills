@@ -28,6 +28,10 @@ importers:
       '@sealed/pack-format':
         specifier: workspace:*
         version: link:../pack-format
+    devDependencies:
+      '@sealed/license-server':
+        specifier: workspace:*
+        version: link:../license-server
 
   packages/license-format:
     dependencies:

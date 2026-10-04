@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "corepack pnpm -r test",
-    "build": "corepack pnpm -r build"
+    "build": "corepack pnpm -r build",
+    "smoke:m2": "node scripts/m2-smoke.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

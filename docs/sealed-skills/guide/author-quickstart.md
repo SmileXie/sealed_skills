@@ -1,10 +1,11 @@
-# 作者快速上手（M1）
+# 作者快速上手（M1 + M2）
 
 目标：用本仓库的 M1 工具，把 `demo/translate/` 这样一个技能目录打成加密包，并为它签发一份
 **绑定到本机设备**的 7 天试用 license，最后在无 dsh 依赖的情况下验证它能被解密。
 
-> 本文所有命令都在仓库根目录执行，且都经过实测。M1 没有授权服务器：试用 license 由作者本机
-> 私钥签发，仅用于开发与演示；生产签发属于 M2。
+> 本文所有命令都在仓库根目录执行，且都经过实测。第 3 节的本机试用 license 仍由作者私钥签发，
+> 仅用于开发与演示；生产签发走授权服务器，见第 4.5 节与
+> `docs/sealed-skills/guide/publish-and-license.md`。
 
 ## 0. 前置
 
@@ -174,14 +175,61 @@ node packages/seal-cli/dist/cli.js inspect translate.sealedpack --author-pub <au
 
 `inspectPack(file, authorPublicKey?)` 是底层函数，只读解析容器并（可选）验 manifest 签名。
 
+## 4.5 登记到授权服务器并签发 purchase token（M2）
+
+本机试用 license 只能自己用；对外售卖时，把 pack 的 **master key 登记到你自己托管的授权服务器**，
+由服务器为每台设备签发 license。完整部署与运营见 `docs/sealed-skills/guide/publish-and-license.md`，
+最短路径：
+
+1. 起服务器（环境变量含义见 `publish-and-license.md` 第 2 节）：
+
+   ```bash
+   SEALED_SERVER_ADMIN_TOKEN=dev-token \
+   SEALED_SERVER_LICENSE_KEY=... SEALED_SERVER_PROOF_KEY=... SEALED_SERVER_MASTER_KEY=... \
+   node packages/license-server/dist/bin.js
+   ```
+
+2. 只上传 master 登记 pack（**绝不上传 `.sealedpack` 或明文**）：
+
+   ```bash
+   SEALED_SERVER_URL=http://127.0.0.1:8787 SEALED_SERVER_ADMIN_TOKEN=dev-token node --input-type=module -e "
+   import { readFileSync } from 'node:fs'
+   import { inspectPack } from './packages/seal-cli/dist/pack.js'
+   import { parseMasterFile } from './packages/seal-cli/dist/master.js'
+   const manifest = inspectPack(readFileSync('translate.sealedpack')).manifest
+   const master = parseMasterFile(readFileSync('translate.sealedpack.master.json', 'utf8'))
+   const authorPub = JSON.parse(readFileSync('author.key.json', 'utf8')).pub
+   const res = await fetch(process.env.SEALED_SERVER_URL + '/v1/admin/packs', {
+     method: 'POST',
+     headers: { 'content-type': 'application/json', authorization: 'Bearer ' + process.env.SEALED_SERVER_ADMIN_TOKEN },
+     body: JSON.stringify({
+       pack: { id: manifest.pack_id, version: manifest.version }, author_pub: authorPub, label: manifest.label,
+       master_b64: master.master.toString('base64url'),
+       trial_entries: manifest.entries.filter((e) => e.trial).map((e) => e.id),
+       entries: manifest.entries.map((e) => ({ id: e.id, type: e.type, size: e.size })),
+     }),
+   })
+   console.log(res.status, await res.text())
+   "
+   ```
+
+3. 买家付款后，由你的计费系统写入一张 `purchase_token`：
+   `Store.putPurchase({ token, sub, packId, version, plan, seats })`（未知 token 会被拒绝，
+   `seats` 控制设备数）。
+
+4. 交付：`.sealedpack` + `purchase_token`；**绝不交付** `master.json` 与 `author.key.json`。
+
+用户侧只需配置 `serverUrl` / `serverProofPubB64` / `trustedLicenseKeysB64`，再给 mount 一个
+`purchaseToken`（或 `trial: true`，或离线 `licensePath`）即可；作者公钥随 license 传递，无需单独配置。
+
 ## 5. 跑测试
 
 ```bash
 corepack pnpm -r test
 ```
 
-M1 基线：五个包共 **123 个测试全绿**（`canonical-json` 5、`pack-format` 33、`license-format` 13、
-`seal-cli` 32、`dsh-sealed-skills` 40）。
+当前基线：六个包共 **170 个测试全绿**（`canonical-json` 5、`pack-format` 36、`license-format` 19、
+`seal-cli` 32、`license-server` 28、`dsh-sealed-skills` 50）。
 
 ## 6. 常见问题
 
@@ -194,8 +242,12 @@ M1 基线：五个包共 **123 个测试全绿**（`canonical-json` 5、`pack-fo
 - **解密时 `LICENSE_EXPIRED`**：已过 `exp` 且超过 `grace_until` 宽限期。
 - **`DECRYPT_FAILED`**：密文被篡改，或条目身份（pack id / version / entry id）不匹配。
 
-## 7. 下一步（尚未实现）
+## 7. 下一步
 
-M2 起，签发将改由授权服务器完成，作者只需持有作者签名私钥；试用/席位/续期/吊销与 OS 密钥库
-后端都在 M2。脚本执行（`scripts/` 条目的运行）在 M3，日志掩码同样在 M3。详见
-`docs/sealed-skills/README.md` 的路线图。
+- **发布与授权（M2，已实现）**：把 master 登记到授权服务器、签发 `purchase_token`、激活 /
+  续期 / 席位 / 吊销，见 `docs/sealed-skills/guide/publish-and-license.md`。
+- **生态与参与方式（M2，已实现）**：为什么收费、怎么选商业模式、如何适配别的 runtime，见
+  `docs/sealed-skills/guide/for-skill-developers.md`。
+- **协议参考（M2，已实现）**：端点、错误码、设备证明公式，见 `docs/sealed-skills/spec/protocol.md`。
+- **尚未实现**：OS 密钥库后端（DPAPI / Keychain / libsecret，Plan 2B，当前为
+  `$SEALED_HOME/device.json` 文件）；脚本执行沙箱与日志掩码（M3）。
