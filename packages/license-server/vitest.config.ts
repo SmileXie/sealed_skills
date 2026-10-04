@@ -4,6 +4,8 @@ const NODE_SQLITE_COMPAT = '\0node-sqlite-compat'
 
 export default defineConfig({
   plugins: [
+    // vite-node 2.1.9 rewrites `node:sqlite` to the bare `sqlite` specifier, so both forms are resolved here.
+    // TEST-ONLY shim: production `src/store.ts` keeps importing `node:sqlite` directly.
     {
       name: 'node-sqlite-compat',
       enforce: 'pre',
