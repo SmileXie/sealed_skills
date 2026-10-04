@@ -143,7 +143,9 @@ describe('container', () => {
       ['array element', [[]]],
       ['missing id', [{ type: 'meta', size: 0, trial: true }]],
       ['non-string id', [{ id: 7, type: 'meta', size: 0, trial: true }]],
-      ['unknown type', [{ id: 'meta', type: 'bogus', size: 0, trial: true }]],
+      ['non-string type', [{ id: 'meta', type: 7, size: 0, trial: true }]],
+      ['missing type', [{ id: 'meta', size: 0, trial: true }]],
+      ['empty type', [{ id: 'meta', type: '', size: 0, trial: true }]],
       ['negative size', [{ id: 'meta', type: 'meta', size: -1, trial: true }]],
       ['non-integer size', [{ id: 'meta', type: 'meta', size: 1.5, trial: true }]],
       ['missing size', [{ id: 'meta', type: 'meta', trial: true }]],
@@ -158,6 +160,12 @@ describe('container', () => {
     it('rejects a non-array entries field as BAD_MANIFEST', () => {
       const json = JSON.stringify({ pack_id: 'p', version: '1', label: 'l', entry_count: 1, entries: 'nope' })
       expect(() => readContainer(containerWithRawManifest(json))).toThrowError(expect.objectContaining({ code: 'BAD_MANIFEST' }))
+    })
+
+    it('tolerates an unknown entry type for forward compatibility (spec 5.3)', () => {
+      const json = JSON.stringify({ pack_id: 'p', version: '1', label: 'l', entry_count: 1, entries: [{ id: 'meta', type: 'future-thing', size: 0, trial: true }] })
+      const parsed = readContainer(containerWithRawManifest(json))
+      expect(parsed.manifest.entries[0].type).toBe('future-thing')
     })
   })
 })

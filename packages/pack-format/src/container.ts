@@ -24,8 +24,6 @@ export class PackFormatError extends Error {
   }
 }
 
-const KNOWN_ENTRY_TYPES: readonly PackEntryType[] = ['meta', 'text', 'script', 'data']
-
 /**
  * RFC 8785 (JCS) serialization of the manifest. This is the single source of truth for the
  * bytes that are stored in the container AND signed, so the signature always covers exactly
@@ -133,8 +131,10 @@ export function readContainer(buf: Buffer): {
     if (typeof candidate.id !== 'string') {
       throw new PackFormatError('BAD_MANIFEST', 'manifest entry id must be a string')
     }
-    if (typeof candidate.type !== 'string' || !KNOWN_ENTRY_TYPES.includes(candidate.type as PackEntryType)) {
-      throw new PackFormatError('BAD_MANIFEST', 'manifest entry type is not recognised')
+    // Spec §5.3: unknown entry types are tolerated (ignored by the loader) for forward
+    // compatibility, so only the shape is enforced here — a non-empty string.
+    if (typeof candidate.type !== 'string' || candidate.type.length === 0) {
+      throw new PackFormatError('BAD_MANIFEST', 'manifest entry type must be a non-empty string')
     }
     if (typeof candidate.size !== 'number' || !Number.isInteger(candidate.size) || candidate.size < 0) {
       throw new PackFormatError('BAD_MANIFEST', 'manifest entry size must be a non-negative integer')
