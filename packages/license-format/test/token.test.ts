@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { licenseStatus, parseLicense, signLicense, verifyLicense } from '../src/index.js'
+import { LicenseError, licenseStatus, parseLicense, signLicense, verifyLicense } from '../src/index.js'
 import type { LicensePayload } from '../src/index.js'
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519')
@@ -45,5 +45,21 @@ describe('license token', () => {
 
   it('rejects structurally invalid payloads', () => {
     expect(() => parseLicense('{"payload":"e30","sig":"AA"}')).toThrow('LICENSE_MALFORMED')
+  })
+
+  it('rejects a non-object license document with a precise error, not a TypeError', () => {
+    let err: unknown
+    try { parseLicense('null') } catch (e) { err = e }
+    expect(err).toBeInstanceOf(LicenseError)
+    expect((err as LicenseError).code).toBe('LICENSE_MALFORMED')
+  })
+
+  it('rejects a signed payload whose pack is null with a precise error, not a TypeError', () => {
+    const bad = { ...sample(), pack: null } as unknown as LicensePayload
+    const token = signLicense(bad, privateKey)
+    let err: unknown
+    try { verifyLicense(token, [publicKey]) } catch (e) { err = e }
+    expect(err).toBeInstanceOf(LicenseError)
+    expect((err as LicenseError).code).toBe('LICENSE_MALFORMED')
   })
 })

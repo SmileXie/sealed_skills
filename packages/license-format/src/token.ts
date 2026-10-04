@@ -14,12 +14,16 @@ export function signLicense(payload: LicensePayload, privateKey: KeyObject): str
 }
 
 export function parseLicense(text: string): { payload: LicensePayload; payloadB64: string; sig: string } {
-  let raw: { payload?: unknown; sig?: unknown }
+  let parsedDoc: unknown
   try {
-    raw = JSON.parse(text) as { payload?: unknown; sig?: unknown }
+    parsedDoc = JSON.parse(text)
   } catch {
     throw new LicenseError('LICENSE_MALFORMED', 'license is not JSON')
   }
+  if (parsedDoc === null || typeof parsedDoc !== 'object' || Array.isArray(parsedDoc)) {
+    throw new LicenseError('LICENSE_MALFORMED', 'license is not a JSON object')
+  }
+  const raw = parsedDoc as { payload?: unknown; sig?: unknown }
   if (typeof raw.payload !== 'string' || typeof raw.sig !== 'string') {
     throw new LicenseError('LICENSE_MALFORMED', 'license is missing payload or sig')
   }
@@ -29,12 +33,19 @@ export function parseLicense(text: string): { payload: LicensePayload; payloadB6
   } catch {
     throw new LicenseError('LICENSE_MALFORMED', 'license payload is not JSON')
   }
+  if (parsed === null || typeof parsed !== 'object') {
+    throw new LicenseError('LICENSE_MALFORMED', 'license payload has the wrong shape')
+  }
   const p = parsed as LicensePayload
-  const ok = p !== null && typeof p === 'object' && p.v === 1 &&
+  const pack = (p as unknown as { pack?: unknown }).pack
+  const ok = p.v === 1 &&
     typeof p.lid === 'string' && typeof p.sub === 'string' && typeof p.dev === 'string' &&
     typeof p.iat === 'number' && typeof p.exp === 'number' && typeof p.grace_until === 'number' &&
     Array.isArray(p.keys) && Array.isArray(p.caps) && Array.isArray(p.groups) &&
-    p.pack !== undefined && typeof p.pack.id === 'string' && typeof p.pack.version === 'string' && typeof p.pack.author_pub === 'string'
+    typeof pack === 'object' && pack !== null &&
+    typeof (pack as { id?: unknown }).id === 'string' &&
+    typeof (pack as { version?: unknown }).version === 'string' &&
+    typeof (pack as { author_pub?: unknown }).author_pub === 'string'
   if (!ok) throw new LicenseError('LICENSE_MALFORMED', 'license payload has the wrong shape')
   return { payload: p, payloadB64: raw.payload, sig: raw.sig }
 }

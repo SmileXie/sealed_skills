@@ -1,6 +1,13 @@
-import { generateKeyPairSync } from 'node:crypto'
+import { createPublicKey, diffieHellman, generateKeyPairSync, randomBytes } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { rawPublicBytes, unwrapEntryKey, wrapEntryKey } from '../src/index.js'
+import {
+  rawPrivateBytes,
+  rawPublicBytes,
+  unwrapEntryKey,
+  wrapEntryKey,
+  x25519PrivateFromRaw,
+  x25519PublicFromRaw,
+} from '../src/index.js'
 import type { LicensePayload } from '../src/index.js'
 
 const device = generateKeyPairSync('x25519')
@@ -36,5 +43,25 @@ describe('entry key wrapping', () => {
     const p = payload()
     p.keys.push(wrapEntryKey(p, 'data:x', Buffer.alloc(32, 5), device.publicKey))
     expect(() => unwrapEntryKey({ ...p, lid: 'lic_other' }, 'data:x', device.privateKey)).toThrow('LICENSE_UNWRAP_FAILED')
+  })
+})
+
+describe('raw X25519 wire codec', () => {
+  it('round-trips raw private key bytes', () => {
+    const raw = randomBytes(32)
+    expect(rawPrivateBytes(x25519PrivateFromRaw(raw)).equals(raw)).toBe(true)
+  })
+
+  it('interoperates a derived private key with the public codec', () => {
+    const raw = randomBytes(32)
+    const privateKey = x25519PrivateFromRaw(raw)
+    const publicKey = createPublicKey(privateKey)
+    const publicRaw = rawPublicBytes(publicKey)
+    expect(rawPublicBytes(x25519PublicFromRaw(publicRaw)).equals(publicRaw)).toBe(true)
+
+    const peer = generateKeyPairSync('x25519')
+    const sharedFromPrivate = diffieHellman({ privateKey, publicKey: peer.publicKey })
+    const sharedFromPeer = diffieHellman({ privateKey: peer.privateKey, publicKey: x25519PublicFromRaw(publicRaw) })
+    expect(sharedFromPrivate.equals(sharedFromPeer)).toBe(true)
   })
 })
