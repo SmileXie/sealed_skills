@@ -233,7 +233,7 @@ payload：
 ```
 
 - 签名算法：Ed25519，载荷规范化 JCS。
-- 密钥封装：服务端为每个条目生成临时 X25519 密钥对，`ss = ECDH(eph_priv, dev_pub)`，`kek = HKDF-SHA256(ss, salt = lid, info = "wrap:" || eid, 32)`，`wrapped = AES-256-GCM(kek, n, aad = lid || eid, CK_i)`。
+- 密钥封装：服务端为每个条目生成临时 X25519 密钥对，`ss = ECDH(eph_priv, dev_pub)`，`kek = HKDF-SHA256(ss, salt = lid, info = "wrap:" || eid, 32)`，`wrapped = AES-256-GCM(kek, n, aad = lid || 0x00 || eid, CK_i)`。
   - 临时密钥对一次性使用，删除私钥。
 - license 文件落盘无害：其中的 CK 已被设备公钥封装，无设备私钥（在 OS 密钥库中）不可解封。
 - 客户端内置服务端公钥（可轮换：payload 增加 `kid`）。
