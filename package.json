@@ -1,0 +1,14 @@
+{
+  "name": "sealed-skills",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "corepack pnpm -r test",
+    "build": "corepack pnpm -r build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "@types/node": "^22.0.0"
+  }
+}
