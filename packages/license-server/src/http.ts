@@ -16,7 +16,10 @@ export async function readJsonBody(req: IncomingMessage, limit = MAX_BODY_BYTES)
   for await (const chunk of req) {
     const buf = chunk as Buffer
     size += buf.length
-    if (size > limit) throw new HttpError(413, 'BAD_REQUEST', 'request body is too large')
+    if (size > limit) {
+      req.resume()
+      throw new HttpError(413, 'BAD_REQUEST', 'request body is too large')
+    }
     chunks.push(buf)
   }
   if (size === 0) return undefined
