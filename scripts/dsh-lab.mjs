@@ -18,7 +18,7 @@
 //   node scripts/dsh-lab.mjs --help
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -99,6 +99,51 @@ function loadMounts() {
 }
 
 /**
+ * Our real package's dsh bundle declaration, when it ships one. With it the lab mounts the
+ * genuine `@sealed/dsh-sealed-skills` bundle (junctioned into the profile node_modules);
+ * without it the lab falls back to a generated shim that copies our peer declarations.
+ */
+function pluginBundle() {
+  const manifest = join(PLUGIN_PKG_DIR, 'package.json')
+  if (!existsSync(manifest)) fail(`plugin package not found at ${manifest}`)
+  const pkg = readJson(manifest)
+  const patch = pkg.dsh?.bundle?.patch
+  if (typeof pkg.name !== 'string' || typeof patch !== 'string') return undefined
+  return { name: pkg.name, patch }
+}
+
+/**
+ * Optional extra plugin config so tests can supply license-server settings without
+ * hand-editing generated files. Set SEALED_DSH_LAB_PLUGIN_CONFIG_FILE to a JSON object;
+ * `keystoreDir` and `mounts` are always overwritten with this lab's values.
+ */
+function loadPluginConfig() {
+  const file = process.env.SEALED_DSH_LAB_PLUGIN_CONFIG_FILE
+  if (!file) return {}
+  if (!existsSync(file)) fail(`SEALED_DSH_LAB_PLUGIN_CONFIG_FILE points at a missing file: ${file}`)
+  const parsed = JSON.parse(readFileSync(file, 'utf8'))
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    fail(`${file} must contain a JSON object of plugin config`)
+  }
+  return parsed
+}
+
+/** Junction our real package into the profile node_modules (link-only; safe to remove). */
+function linkRealBundle(profileDir) {
+  const scope = join(profileDir, 'node_modules', '@sealed')
+  const link = join(scope, 'dsh-sealed-skills')
+  mkdirSync(scope, { recursive: true })
+  if (existsSync(link)) {
+    if (!lstatSync(link).isSymbolicLink()) {
+      fail(`refusing to replace ${toPosix(link)}: it exists and is not a link`)
+    }
+    rmSync(link, { recursive: true, force: true })
+  }
+  symlinkSync(PLUGIN_PKG_DIR, link, 'junction')
+  return link
+}
+
+/**
  * Run npm inside the lab. Prefers npm's JavaScript entrypoint beside the running node binary
  * (no shell, no DEP0190), and falls back to the platform shim only if that file is absent.
  */
@@ -158,16 +203,23 @@ function ensureDependency(force) {
 /**
  * Generate (idempotently) the profile that mounts our built plugin.
  *
- * The mount is a generated *bundle shim* placed in the profile's own `node_modules`. The shim
- * declares `dsh.bundle.patch` and copies our real package's `peerDependencies`, so app-boot's
- * bundle compat gate is exercised against the values we actually ship. Its patch inserts our
- * plugin row by absolute `file://` URL (the entry shape is `{ id, name, config }`).
+ * Preferred mount: our *genuine* package identity. When `packages/dsh-sealed-skills` declares
+ * `dsh.bundle`, the lab junctions that package into the profile's own `node_modules` and lists
+ * `@sealed/dsh-sealed-skills` in `dsh.profile.bundles`, so app-boot's bundle resolver and its dsh
+ * peer compatibility gate see the real package. This profile's pack configuration rides the
+ * profile's own patch layer, targeting the `sealed-skills` row our shipped bundle patch inserts.
+ *
+ * Fallback (no `dsh.bundle`): a generated *bundle shim* in the profile `node_modules` that copies
+ * our real peer declarations and inserts our plugin row by absolute `file://` URL.
  */
 function writeProfileFiles() {
   if (!existsSync(PLUGIN_DIST)) {
     fail(`built plugin not found at ${PLUGIN_DIST}. Run "corepack pnpm -r build" first.`)
   }
   const mounts = loadMounts()
+  const pluginConfig = { ...loadPluginConfig(), keystoreDir: toPosix(SEALED_HOME), mounts }
+  const real = pluginBundle()
+  const bundle = real ?? { name: BUNDLE_NAME, patch: './cordis.patch.yml' }
   writeFile(
     join(PROFILE_DIR, 'package.json'),
     `${JSON.stringify(
@@ -178,7 +230,7 @@ function writeProfileFiles() {
         dependencies: {},
         dsh: {
           profile: {
-            bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', BUNDLE_NAME],
+            bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', bundle.name],
           },
         },
       },
@@ -187,40 +239,56 @@ function writeProfileFiles() {
     )}\n`,
   )
   writeFile(join(PROFILE_DIR, 'cordis.yml'), '# dsh profile root — composed from the bundle patch layers.\n[]\n')
-  writeFile(join(PROFILE_DIR, 'cordis.patch.yml'), '# User patch layer (unused by the lab).\n[]\n')
+  // The profile's own patch layer carries this profile's pack configuration; it targets the
+  // `sealed-skills` row a bundle layer inserts and is applied after every bundle layer.
+  writeFile(
+    join(PROFILE_DIR, 'cordis.patch.yml'),
+    [
+      '# GENERATED by scripts/dsh-lab.mjs — re-run --ensure to regenerate. Do not edit by hand.',
+      `- id: ${PLUGIN_ID}`,
+      `  config: ${JSON.stringify(pluginConfig)}`,
+      '',
+    ].join('\n'),
+  )
   writeFile(
     join(PROFILE_DIR, 'pnpm-workspace.yaml'),
     'packages:\n  - .\nnodeLinker: hoisted\nautoInstallPeers: false\n',
   )
-  writeFile(
-    join(BUNDLE_DIR, 'package.json'),
-    `${JSON.stringify(
-      {
-        name: BUNDLE_NAME,
-        version: '0.0.0',
-        private: true,
-        type: 'module',
-        description: 'GENERATED by scripts/dsh-lab.mjs — mounts @sealed/dsh-sealed-skills into this profile.',
-        dsh: { bundle: { patch: './cordis.patch.yml' } },
-        peerDependencies: pluginPeerDependencies(),
-      },
-      null,
-      2,
-    )}\n`,
-  )
-  const patch = [
-    '# GENERATED by scripts/dsh-lab.mjs — re-run --ensure to regenerate. Do not edit by hand.',
-    '- insert:',
-    `    - id: ${PLUGIN_ID}`,
-    `      name: ${JSON.stringify(pathToFileURL(PLUGIN_DIST).href)}`,
-    '      config:',
-    `        keystoreDir: ${JSON.stringify(toPosix(SEALED_HOME))}`,
-    `        mounts: ${JSON.stringify(mounts)}`,
-    '',
-  ].join('\n')
-  writeFile(join(BUNDLE_DIR, 'cordis.patch.yml'), patch)
+  if (real) {
+    linkRealBundle(PROFILE_DIR)
+    // A previous run may have left the generated shim behind; drop it so only the real bundle resolves.
+    rmSync(join(PROFILE_DIR, 'node_modules', '@sealed-lab'), { recursive: true, force: true })
+  } else {
+    writeFile(
+      join(BUNDLE_DIR, 'package.json'),
+      `${JSON.stringify(
+        {
+          name: BUNDLE_NAME,
+          version: '0.0.0',
+          private: true,
+          type: 'module',
+          description: 'GENERATED by scripts/dsh-lab.mjs — mounts @sealed/dsh-sealed-skills into this profile.',
+          dsh: { bundle: { patch: './cordis.patch.yml' } },
+          peerDependencies: pluginPeerDependencies(),
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    writeFile(
+      join(BUNDLE_DIR, 'cordis.patch.yml'),
+      [
+        '# GENERATED by scripts/dsh-lab.mjs — re-run --ensure to regenerate. Do not edit by hand.',
+        '- insert:',
+        `    - id: ${PLUGIN_ID}`,
+        `      name: ${JSON.stringify(pathToFileURL(PLUGIN_DIST).href)}`,
+        `      config: ${JSON.stringify(pluginConfig)}`,
+        '',
+      ].join('\n'),
+    )
+  }
   mkdirSync(SEALED_HOME, { recursive: true })
-  log(`wrote profile ${toPosix(PROFILE_DIR)} (bundle ${BUNDLE_NAME}, ${mounts.length} mount(s))`)
+  log(`wrote profile ${toPosix(PROFILE_DIR)} (bundle ${bundle.name}, ${mounts.length} mount(s))`)
 }
 
 /** Install the harness if needed and (re)generate the profile. Idempotent. */

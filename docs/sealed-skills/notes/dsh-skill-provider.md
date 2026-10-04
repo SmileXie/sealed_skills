@@ -4,7 +4,7 @@
 
 # 真实 dsh `SkillProvider` 契约与我们的适配
 
-- 状态：**接口签名 = 已验证（verified）**；**插件加载/接线 = 未验证（未验证）**
+- 状态：**接口签名 = 已验证（verified）**；**插件加载/接线 = 已验证（M3 Task 3，见 §6）**；**完整 headless profile 启动 = 未验证（需模型凭证）**
 - 日期：2026-10-04
 - 验证对象：`@deepseek-ai/dsh-skill@0.0.1-rc.1`（npm 发布产物）
 - 相关实现：`packages/dsh-sealed-skills/src/provider.ts`（适配层）、`packages/dsh-sealed-skills/src/plugin.ts`（插件入口）
@@ -147,3 +147,53 @@ cd .dsh-checkout && corepack pnpm install
 
 然后在测试 profile 里 `ctx.plugin(sealedPlugin, config)`，断言：虚拟技能无 `path`、`list()` 摘要正确、
 `get()` 正文正确、dispose 后 provider 被注销。
+
+## 6. M3 Task 3 实测：真实 dsh 0.2.x 运行时集成（2026-10-04）
+
+目标运行时：`@deepseek-ai/dsh@0.2.0-rc.2`（cordis `~4.0.4`），装在 git-ignored 的 `.dsh-lab/`；
+测试文件 `packages/dsh-sealed-skills/test/dsh-integration.test.ts`（门控 `SEALED_DSH_LAB=1`）。
+
+**驱动的层（务必区分，勿过度声明）：**
+
+| 层 | 怎么驱动 | 证明了什么 |
+| --- | --- | --- |
+| 真实 profile 加载器 | app-boot 的 `loadProfile` + `evaluatePluginCompatibility` + `composeEntries`，对象为 lab profile `m3-lab` | 真实包身份 `@sealed/dsh-sealed-skills` 经 `dsh.bundle` 被解析，`skippedBundles` 为空，peer 兼容门通过 |
+| 真实 cordis 内核 + 真实 `SkillRegistry` | `app-boot.boot('sealed-verify', <最小 cordis.yml>, [], prepare, bareModuleBaseUrl)`；条目 `@deepseek-ai/dsh-skill` 与 `@sealed/dsh-sealed-skills` 均按**真实包名**解析 | `apply(ctx, config)` 真的执行、`registerProvider()` 真的调用、`skills/change` 被触发、`list()`/`get()` 返回技能 |
+| 未驱动 | 完整 shipped profile（`dsh-base` + `dsh-headless`） | **未验证**：headless 应用需要模型凭证（`MISSING_CREDENTIAL`），本环境无法启动 |
+
+**授权链：** 真实 Ed25519 签名的 pack（`@sealed/pack-format`）+ 进程内真实 `@sealed/license-server`
+（`createApp` 监听 `127.0.0.1:0`）+ 真实 `LicenseClient` 在线激活（`purchaseToken`）。
+
+**实测命令与观察（lab 已装）：**
+
+```text
+$ $env:SEALED_DSH_LAB='1'; corepack pnpm --filter @sealed/dsh-sealed-skills test
+ ✓ test/dsh-integration.test.ts (2 tests)
+ Test Files  8 passed (8)
+      Tests  57 passed (57)          # 门控关闭时全仓为 173 passed + 1 skipped
+
+$ node scripts/dsh-lab.mjs --ensure --dump-config
+ # == @sealed/dsh-sealed-skills, patched by .../m3-lab/cordis.patch.yml
+ - id: sealed-skills
+   name: '@sealed/dsh-sealed-skills'
+   config:
+     keystoreDir: .../.dsh-lab/sealed
+     mounts: [...]
+ dsh-lab: self-check: plugin sealed-skills is mounted
+ dsh-lab: self-check: no profile bundle was skipped
+```
+
+**反向对照（证明断言不是空转）：** 同一条真实管线把 `purchaseToken` 换成伪造值、并用全新
+`keystoreDir`（无缓存 license）→ `ctx.skills.list()` 返回 `[]`；正确 token → 返回 `[translate]`
+且正文为真实明文。授权链是真正 load-bearing 的。
+
+**§4 未验证项的收敛：**
+
+- 已关闭：#2（apply 内同步注册）、#3（ESM 导出与加载）、#4（`signal`/invalidate 语义——注册时
+  及 dispose 后均触发 `skills/change`）、#5（locator 仅被原样回传）、#6（`invocation` 每次新建）、
+  #9（挂载语法——改为发布真实 `dsh.bundle` + profile 用户层 patch）、#11（单实例/单 keystore 路径）、
+  #12（`get()` 折叠为 `undefined` 符合 `SkillRegistry` 语义）。
+- 仍开放：#1（未 clone 源码仓库，仅核对 npm 产物）、#7（`rank` 相对 `BUNDLED_SKILL_RANK` 的产品取舍）、
+  #8（仍未声明 `Config` schema——dsh 接受普通对象配置，但没有 schema 校验）、
+  #10（单 provider 聚合 vs 每 pack 一个 provider 的设计选择），
+  以及**完整 headless profile 的端到端启动**（需模型凭证）。

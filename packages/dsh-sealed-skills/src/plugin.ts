@@ -15,10 +15,12 @@ import { createDshSkillProvider, type DshSkillProvider, type DshSkillProviderCon
  * published `@deepseek-ai/dsh-skill@0.2.0-rc.2` type declarations (see provider.ts for
  * the exact file + line map; the cordis service name is still `skills`, and the class was
  * renamed `SkillService` -> `SkillRegistry`). The package declares the matching dsh peer
- * dependencies (optional, so it still builds/tests without dsh) so app-boot's
- * compatibility preflight does not skip it — see package.json. The *plugin loader* details
- * (profile wiring, `cordis.yml` mount syntax) remain UNVERIFIED until the M3 dsh-lab task
- * runs — see `docs/sealed-skills/notes/dsh-0.2-seams.md`.
+ * dependencies (optional, so it still builds/tests without dsh), ships a `dsh.bundle` patch
+ * (`cordis.patch.yml`), and was exercised inside a real `@deepseek-ai/dsh@0.2.0-rc.2` profile by
+ * `test/dsh-integration.test.ts` (M3 Task 3): the profile loader resolves this bundle with no
+ * skipped bundle, `apply()` registers through the real `SkillRegistry`, and a licensed pack
+ * decrypts. The full shipped headless profile is still unverified (it needs model credentials) —
+ * see `docs/sealed-skills/notes/dsh-skill-provider.md` section 6.
  */
 
 /**

@@ -1,0 +1,11 @@
+﻿# Sealed Skills — dsh bundle layer.
+#
+# Mounts the sealed-skills plugin entry. The bundle carries no pack configuration of
+# its own: a profile's own `cordis.patch.yml` (or a launcher `--patch` overlay) targets
+# the `sealed-skills` entry below to supply `keystoreDir`, `mounts`, and the license
+# server settings — the same split every in-box bundle uses between a shipped layer
+# and user configuration.
+- insert:
+    - id: sealed-skills
+      name: '@sealed/dsh-sealed-skills'
+      config: {}

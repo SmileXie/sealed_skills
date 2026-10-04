@@ -1,5 +1,6 @@
 {
   "name": "@sealed/dsh-sealed-skills",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
