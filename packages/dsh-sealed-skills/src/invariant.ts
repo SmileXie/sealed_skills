@@ -1,4 +1,4 @@
-import { parsePlaceholder } from './session-events.js'
+import { parsePlaceholder, placeholderFor, SEALED_REDACTED_ALG } from './session-events.js'
 
 /**
  * M3 Task 6 — the sealed-plaintext runtime invariant.
@@ -16,10 +16,19 @@ import { parsePlaceholder } from './session-events.js'
  *   :27-37  `interface InvariantInstaller { (ctx, fail): void | Promise<void>; readonly inject?: Inject }`
  *   :39-47  `InvariantError { code: 'INVARIANT'; packageName: string }` (thrown by the real `fail`)
  *   :80     `register(packageName: string, installer: InvariantInstaller): () => void`
- * Runtime (`lib/index.js:92-94`) implements `fail` as `throw new InvariantError(packageName, message)`;
- * the installer runs in a CHILD fiber (`ctx.plugin(...)`), so its failure tears down only this
- * registration. `register` can be filtered by config (`enabled:false` / allowlist / blocklist); a
- * filtered registration returns a no-op disposer and does NOT throw. See
+ * `register` can be filtered by config (`enabled:false` / allowlist / blocklist); a filtered
+ * registration returns a no-op disposer and does NOT throw.
+ *
+ * CORRECTED FAILURE SEMANTICS (real-runtime probe, dsh 0.2.0-rc.2). The real `fail` does throw
+ * `InvariantError` (`dsh-invariants/lib/index.js:92`), but our listener runs inside a
+ * `session/event` dispatch, and `dsh-session` wraps every observer in
+ * `invokeContainedSessionObservers` (`dsh-session/lib/index.js:1228`): a synchronous listener throw
+ * is caught and merely logged as `session "<id>": session/event listener threw: ...`. It does NOT
+ * reach `InvariantRegistry`, the child fiber is NOT failed, and the registration is NOT torn down —
+ * the sentinel stays armed. The only observable signal on this path is the warn log, which is why
+ * the violation message is hard-scrubbed of the offending body (see `describeViolation`). The
+ * installer's child-fiber failure would only matter for a NON-swallowed dispatch path. This exact
+ * behavior is pinned by the `SEALED_DSH_LAB=1`-gated `test/dsh-invariant.test.ts`. See
  * `docs/sealed-skills/notes/dsh-0.2-seams.md` section 9.6.
  */
 
@@ -31,6 +40,13 @@ export const SEALED_PACKAGE_NAME = '@sealed/dsh-sealed-skills'
  * trivially "containing" a short, common field such as `type`, `alg` or an entry id.
  */
 export const SEALED_PLAINTEXT_MIN_LENGTH = 24
+
+/**
+ * Conservative event-type shape. The violation message echoes the event type ONLY when it matches
+ * this pattern; anything else (including an attacker-controlled string) is dropped, so a body
+ * smuggled into `event.type` can never reach a log line through the message.
+ */
+const EVENT_TYPE_PATTERN = /^[a-z][a-z0-9/_.-]{0,63}$/
 
 /** The real `fail` never returns; it throws `InvariantError`. */
 export type InvariantFailure = (message: string) => never
@@ -67,45 +83,71 @@ function isCommittedEvent(value: unknown): value is SealedInvariantEvent {
   return 'data' in (value as object)
 }
 
+/** Remove every occurrence of our placeholder sentinels, leaving only the surrounding text. */
+function stripPlaceholders(text: string, tokens: readonly string[]): string {
+  let remainder = text
+  for (const token of tokens) remainder = remainder.split(placeholderFor(token)).join('')
+  return remainder
+}
+
 /**
- * Whether any string leaf of `value` is judged plaintext. Recurses through objects/arrays (never
- * `JSON.stringify`s the whole event: concatenation across fields would manufacture false hits) and
- * skips our own placeholder sentinels. Strings below `minLength` are ignored.
+ * The first string leaf of `value` judged plaintext, or `undefined`. Recurses through objects and
+ * arrays (never `JSON.stringify`s the whole event: concatenation across fields would manufacture
+ * false hits). A leaf that merely CONTAINS a placeholder is stripped and its remainder tested, so
+ * `placeholder + body` is still caught while a pure placeholder is not. Strings below `minLength`
+ * are ignored, and the known structural constant `SEALED_REDACTED_ALG` is never plaintext.
  */
-function containsPlaintextLeaf(
+function findPlaintextLeaf(
   value: unknown,
   minLength: number,
   isPlaintext: (text: string) => boolean,
   seen: Set<object>,
-): boolean {
+): string | undefined {
   if (typeof value === 'string') {
-    if (value.length < minLength) return false
-    if (parsePlaceholder(value).length > 0) return false
-    return isPlaintext(value) === true
+    if (value.length < minLength) return undefined
+    const tokens = parsePlaceholder(value)
+    const candidate = tokens.length === 0 ? value : stripPlaceholders(value, tokens)
+    if (candidate.length < minLength) return undefined
+    if (candidate === SEALED_REDACTED_ALG) return undefined
+    return isPlaintext(candidate) === true ? candidate : undefined
   }
-  if (value === null || typeof value !== 'object') return false
+  if (value === null || typeof value !== 'object') return undefined
   const obj = value as object
-  if (seen.has(obj)) return false
+  if (seen.has(obj)) return undefined
   seen.add(obj)
   try {
     if (Array.isArray(obj)) {
       for (const item of obj) {
-        if (containsPlaintextLeaf(item, minLength, isPlaintext, seen)) return true
+        const hit = findPlaintextLeaf(item, minLength, isPlaintext, seen)
+        if (hit !== undefined) return hit
       }
-      return false
+      return undefined
     }
     for (const key of Object.keys(obj)) {
-      if (containsPlaintextLeaf((obj as Record<string, unknown>)[key], minLength, isPlaintext, seen)) return true
+      const hit = findPlaintextLeaf((obj as Record<string, unknown>)[key], minLength, isPlaintext, seen)
+      if (hit !== undefined) return hit
     }
-    return false
+    return undefined
   } finally {
     seen.delete(obj)
   }
 }
 
 /**
- * The pure decision function. Returns a violation message that names ONLY `type` and `seq` (never
- * the offending body) when a committed session event carries plaintext; `undefined` otherwise.
+ * The violation message. It names `seq` always, and the event `type` ONLY when the type is a
+ * conservative, log-safe identifier AND is not itself the matched leaf. The offending body (or any
+ * body text smuggled into `event.type`) therefore never appears in the message.
+ */
+function describeViolation(event: SealedInvariantEvent, matchedLeaf: string): string {
+  const type = event.type === matchedLeaf || !EVENT_TYPE_PATTERN.test(event.type) ? undefined : event.type
+  return type === undefined
+    ? 'sealed plaintext reached a committed session event at seq ' + String(event.seq)
+    : 'sealed plaintext reached committed session event "' + type + '" at seq ' + String(event.seq)
+}
+
+/**
+ * The pure decision function. Returns a body-free violation message when a committed session event
+ * carries plaintext; `undefined` otherwise.
  *
  * The sentinel itself NEVER throws: a malformed/foreign event, a throwing `isPlaintext`, a cycle,
  * or any unexpected shape all fold into `undefined`.
@@ -119,8 +161,9 @@ export function findSealedPlaintext(
     if (typeof isPlaintext !== 'function') return undefined
     if (!isCommittedEvent(event)) return undefined
     const floor = Number.isInteger(minLength) && minLength >= 0 ? minLength : SEALED_PLAINTEXT_MIN_LENGTH
-    if (!containsPlaintextLeaf(event, floor, isPlaintext, new Set<object>())) return undefined
-    return 'sealed plaintext reached committed session event "' + event.type + '" at seq ' + String(event.seq)
+    const matched = findPlaintextLeaf(event, floor, isPlaintext, new Set<object>())
+    if (matched === undefined) return undefined
+    return describeViolation(event, matched)
   } catch {
     return undefined
   }
@@ -135,9 +178,12 @@ export interface SealedInvariantDeps {
 
 /**
  * Build the installer registered under {@link SEALED_PACKAGE_NAME}. It subscribes to committed
- * `session/event`s in its own child fiber (hence `inject: ['sessions']`); a hit calls `fail`, which
- * throws `InvariantError` and tears down only this registration. The listener itself must never
- * throw except for that deliberate `fail`.
+ * `session/event`s in its own child fiber (hence `inject: ['sessions']`); on a hit it calls `fail`,
+ * which throws `InvariantError`.
+ *
+ * NOTE (probe-verified): on the `session/event` dispatch path dsh-session SWALLOWS that throw into a
+ * warn log, so the registration stays live and the sentinel stays armed. See the module header.
+ * The listener itself must never throw except for that deliberate `fail`.
  */
 export function createSealedPlaintextInvariant(deps: SealedInvariantDeps): InvariantInstaller {
   const isPlaintext = deps.isPlaintext

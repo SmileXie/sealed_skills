@@ -126,7 +126,12 @@ export interface SkillsContext {
 }
 
 export const name = 'sealed-skills'
-export const inject = ['skills', 'sessions', 'invariants']
+// `invariants` is deliberately NOT a required inject: cordis aborts/deferrs a plugin whose required
+// service is missing, which would stop the provider from serving in profiles that ship without
+// `@deepseek-ai/dsh-invariants`. The sentinel is defense-in-depth, so we read `ctx.invariants`
+// opportunistically AFTER the log-mask is ready (the service is visible to this fiber when present,
+// `undefined` when absent) and degrade to a redacted warning + no-op disposer.
+export const inject = ['skills', 'sessions']
 
 /**
  * Register the sealed provider on `ctx.skills` during plugin apply and return the dsh

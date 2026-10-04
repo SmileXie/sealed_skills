@@ -318,9 +318,11 @@ Task 1 用本机真实安装的 `@deepseek-ai/dsh@0.2.0-rc.2`（`%TEMP%\dsh-reco
 
 - 服务名：`declare module '@deepseek-ai/cordis' { interface Context { invariants: InvariantRegistry } }` —— `@deepseek-ai/dsh-invariants/lib/types/index.d.ts:51-53`；运行时 `super(ctx, "invariants")` —— `lib/index.js:60`。
 - 注册签名：`register(packageName: string, installer: InvariantInstaller): () => void;` —— `index.d.ts:80`；运行时 `lib/index.js:80`，在 `ctx.effect(async () => { … }, \`invariants.register(${JSON.stringify(packageName)})\`)`（`:88`、`:114`）内安装 ⇒ 返回 **fiber-owned disposer**。`packageName` 须非空、无空白、未被注册过（否则抛错，`:81-82`）。
-- 安装器形状：`interface InvariantInstaller { (ctx: Context, fail: InvariantFailure): void | Promise<void>; readonly inject?: Inject; }` —— `index.d.ts:27-37`（调用签名 `:34`，可选 `inject` `:36`）。安装器运行在**子 fiber**（`lib/index.js:96` `ctx.plugin(...)`）；失败只拆除该注册。
+- 安装器形状：`interface InvariantInstaller { (ctx: Context, fail: InvariantFailure): void | Promise<void>; readonly inject?: Inject; }` —— `index.d.ts:27-37`（调用签名 `:34`，可选 `inject` `:36`）。安装器运行在**子 fiber**（`lib/index.js:96` `ctx.plugin(...)`）；**安装器初始化阶段**抛出才会拆除该注册。
 - `InvariantFailure = (message: string) => never` —— `index.d.ts:25`；运行时实现 `(message) => { throw new InvariantError(packageName, message) }` —— `lib/index.js:92-94`；`InvariantError.code === "INVARIANT"` —— `index.d.ts:41`。
-- 结论：Task 6 用 `ctx.invariants.register('<pkg>', (ctx, fail) => { … })`；违规时调用 `fail('…')` 即拆掉本注册，不影响其他插件。
+- 结论：Task 6 用 `ctx.invariants.register('<pkg>', (ctx, fail) => { … })`；`fail('…')` 抛出的 `InvariantError` 不会影响其他插件。
+- **修正（Task 6 修复轮，真机实测）**：真实 `session/event` 分发路径由 dsh-session 的 `invokeContainedSessionObservers`（`dsh-session/lib/index.js:1228-1237`）逐个包裹监听器：**同步抛出的异常被 catch，仅 `ctx.logger.warn('session "<id>": session/event listener threw: …')`**。因此该路径上 `fail()` 的 `InvariantError` **不会**传播回 `InvariantRegistry`、**不会**使子 fiber 失败、**不会**拆除注册——哨兵保持武装，唯一可见信号是那行 warn 日志。子 fiber 失败拆除只适用于**安装器初始化**抛出（非 `session/event` 监听器抛出）的路径。
+- 由此推出两条硬约束：(1) 违规消息必须**不含正文**（warn 会直接进 harness 日志）——只允许在保守白名单（`^[a-z][a-z0-9/_.-]{0,63}$`）下输出 `type`，否则只输出 `seq`；(2) 哨兵是**检测**而非**阻止**，且该路径的“告警后仍武装”行为已由门控真机测试 `packages/dsh-sealed-skills/test/dsh-invariant.test.ts`（`SEALED_DSH_LAB=1`）钉死。
 
 ### 9.7 Task 5 裁决：运行时类型登记取代 `ignorable: true`（实测）
 

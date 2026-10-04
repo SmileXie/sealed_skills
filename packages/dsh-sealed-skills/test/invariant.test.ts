@@ -17,9 +17,11 @@ import {
 } from '../src/invariant.js'
 import {
   parsePlaceholder,
+  placeholderFor,
   renderPlaceholder,
   sealedRedactedData,
   SEALED_REDACTED,
+  SEALED_REDACTED_ALG,
 } from '../src/session-events.js'
 
 const ENTRY = 'skill:translate:body'
@@ -178,6 +180,39 @@ describe('findSealedPlaintext', () => {
   })
 })
 
+  it('never echoes a body forged into event.type (uppercase canary)', () => {
+    const message = findSealedPlaintext({ type: CANARY, seq: 4, data: {} }, (text) => CANARY.includes(text))
+    expect(message).toBeDefined()
+    expect(message).not.toContain(CANARY)
+    expect(message).toContain('4')
+  })
+
+  it('never echoes a whitelist-shaped body forged into event.type', () => {
+    const shaped = 'canary-body-do-not-log-me-1234567890'
+    const message = findSealedPlaintext({ type: shaped, seq: 5, data: {} }, (text) => shaped.includes(text))
+    expect(message).toBe('sealed plaintext reached a committed session event at seq 5')
+    expect(message).not.toContain(shaped)
+  })
+
+  it('still names a conservative built-in event type', () => {
+    const message = findSealedPlaintext({ type: 'tool/result', seq: 6, data: { note: CANARY } }, (text) => CANARY.includes(text))
+    expect(message).toContain('"tool/result"')
+    expect(message).not.toContain(CANARY)
+  })
+
+  it('detects a body appended to a placeholder on the same leaf', () => {
+    const { token } = renderPlaceholder(ENTRY)
+    const event = { type: 'tool/result', seq: 8, data: { message: { content: [{ type: 'text', text: placeholderFor(token) + CANARY }] } } }
+    const message = findSealedPlaintext(event, (text) => CANARY.includes(text))
+    expect(message).toBeDefined()
+    expect(message).not.toContain(CANARY)
+  })
+
+  it('ignores the structural algorithm label so every marker cannot false-fire', () => {
+    const { token } = renderPlaceholder(ENTRY)
+    const event = { type: SEALED_REDACTED, seq: 9, data: { ...sealedRedactedData(8, ENTRY, token), alg: SEALED_REDACTED_ALG } }
+    expect(findSealedPlaintext(event, () => true)).toBeUndefined()
+  })
 describe('createSealedPlaintextInvariant', () => {
   it('injects the sessions service and subscribes to committed session events', () => {
     const installer = createSealedPlaintextInvariant({ isPlaintext: () => false })
