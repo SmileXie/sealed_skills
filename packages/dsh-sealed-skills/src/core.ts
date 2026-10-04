@@ -1,6 +1,6 @@
 import { createPublicKey, type KeyObject } from 'node:crypto'
 import { entryAad, openEntry, readContainer, verifyManifestSignature } from '@sealed/pack-format'
-import { LicenseError, licenseStatus, unwrapEntryKey, verifyLicense, type LicensePayload } from '@sealed/license-format'
+import { LicenseError, licenseStatus, rawPublicBytes, unwrapEntryKey, verifyLicense, type LicensePayload } from '@sealed/license-format'
 import { x25519PrivateFromRaw, type Keystore } from './keystore.js'
 
 export interface SkillSummary {
@@ -41,6 +41,7 @@ export class SealedCore {
   private readonly parsed: ReturnType<typeof readContainer>
   private readonly payload: LicensePayload
   private meta?: MetaShape
+  private devicePublicB64?: string
 
   constructor(private readonly opts: {
     pack: Buffer
@@ -76,7 +77,13 @@ export class SealedCore {
     if (!skill) throw new SealedError('META_INVALID', 'no such skill: ' + name)
     const bodyId = 'skill:' + name + ':body'
     if (!skill.entries.includes(bodyId)) throw new SealedError('META_INVALID', 'skill has no body entry')
-    const content = (await this.readEntry(bodyId)).toString('utf8')
+    const bodyBuf = await this.readEntry(bodyId)
+    let content: string
+    try {
+      content = bodyBuf.toString('utf8')
+    } finally {
+      bodyBuf.fill(0)
+    }
     const definition: SkillDefinition = { name: skill.name, description: skill.description, invocation: skill.invocation, content }
     if (skill.whenToUse) definition.whenToUse = skill.whenToUse
     return definition
@@ -98,6 +105,14 @@ export class SealedCore {
       deviceKey = x25519PrivateFromRaw(raw)
     } finally {
       raw.fill(0)
+    }
+    // Spec §7.2 step 4 / §8: the license must be bound to THIS machine. Derive the local
+    // public key from the device private key (cached) and compare it base64url to `dev`.
+    if (!this.devicePublicB64) {
+      this.devicePublicB64 = rawPublicBytes(createPublicKey(deviceKey)).toString('base64url')
+    }
+    if (this.devicePublicB64 !== this.payload.dev) {
+      throw new SealedError('LICENSE_INVALID', 'this license is not bound to the local device key')
     }
     // A missing grant (LICENSE_NO_GRANT) is a denial; any other unwrap fault is an authentication failure.
     const ck = this.unwrapGrantedKey(id, deviceKey)
@@ -123,7 +138,13 @@ export class SealedCore {
 
   private async loadMeta(): Promise<MetaShape> {
     if (!this.meta) {
-      const raw = (await this.readEntry('meta')).toString('utf8')
+      const metaBuf = await this.readEntry('meta')
+      let raw: string
+      try {
+        raw = metaBuf.toString('utf8')
+      } finally {
+        metaBuf.fill(0)
+      }
       let parsed: unknown
       try {
         parsed = JSON.parse(raw)

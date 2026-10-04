@@ -35,9 +35,9 @@ fatal: unable to access 'https://github.com/deepseek-ai/deepseek-harness/': Recv
 来源：`@deepseek-ai/dsh-skill@0.0.1-rc.1` → `package/lib/types/index.d.ts`
 
 - L16 `export declare const BUNDLED_SKILL_RANK = 600;`
-- L39-59 `interface SkillSummary { name: string; description: string; whenToUse?: string; invocation: SkillInvocationPolicy; source: SkillSource; provider: string; resourceBase?: SkillResourceBase }`
+- L44-59 `interface SkillSummary { name: string; description: string; whenToUse?: string; invocation: SkillInvocationPolicy; source: SkillSource; provider: string; resourceBase?: SkillResourceBase }`
 - L61-70 `interface SkillCandidate extends SkillSummary { rank: number; locator: unknown; path?: string; metadata?: Readonly<Record<string, unknown>> }`
-- L72-80 `interface SkillDefinition extends SkillSummary { content: string; path?: string; metadata?: Readonly<Record<string, unknown>> }`
+- L72-79 `interface SkillDefinition extends SkillSummary { content: string; path?: string; metadata?: Readonly<Record<string, unknown>> }`
 - L81-86 `type SkillRegistration = Omit<SkillDefinition, 'invocation' | 'provider'> & { invocation?: SkillInvocationPolicy; provider?: string }`
 - L88-95 `interface SkillLookupOptions { cwd?: string | undefined; signal?: AbortSignal | undefined }`
 - L100-104 `interface SkillViewOptions extends SkillLookupOptions { scope?: ScopeKey | undefined }`
@@ -54,9 +54,9 @@ fatal: unable to access 'https://github.com/deepseek-ai/deepseek-harness/': Recv
 - L190-195 `interface SkillProviderControl { readonly signal: AbortSignal; readonly invalidate: () => void }`
 - L201-204 `declare module '@deepseek-ai/cordis' { interface Context { skills: SkillService } }`
 - L249 `registerProvider(create: (control: SkillProviderControl) => SkillProvider): () => void`（`SkillService` 方法）
-- L258-267 `register(skill: SkillRegistration): () => void`
+- L259 `register(skill: SkillRegistration): () => void`
 - L276 `snapshot(options?: SkillViewOptions): Promise<SkillCatalogSnapshot>`
-- L282 `list(options?: SkillViewOptions): Promise<SkillSummary[]>`（按 name 排序）
+- L268 `list(options?: SkillViewOptions): Promise<SkillSummary[]>`（按 name 排序）
 - L286 `get(name: string, options?: SkillViewOptions): Promise<SkillDefinition | undefined>`
 
 来源：`@deepseek-ai/cordis@4.0.4` → `package/lib/types/registry.d.ts`

@@ -32,7 +32,7 @@ translate.sealedpack  ──┐
 
 - `.sealedpack` v1 容器：JCS manifest、作者 Ed25519 签名、逐条目 HKDF-SHA256 派生 + AES-256-GCM。
 - `license` v1：Ed25519 签名令牌、X25519 ECDH + HKDF + AES-GCM 的逐条目 CK 封装、设备绑定、有效期与宽限期。
-- `seal-cli`：打包目录、检查包、签发试用 license（本机 dev 密钥）。
+- `seal-cli`（`seal` 可执行）：生成作者密钥、打包目录（同时产出 `x.master.json`）、检查包、签发试用 license。
 - `dsh-sealed-skills`：文件密钥库、`SealedCore`（授权 + 解密 + 元数据）、`PackRegistry`、dsh `SkillProvider` 适配层与 `plugin.ts`。
 - `scripts/m1-smoke.mjs`：端到端冒烟，产出密文包 + license，再从磁盘读回并解出明文正文。
 
@@ -48,9 +48,9 @@ translate.sealedpack  ──┐
 | 包 | 职责 | 关键导出 |
 |---|---|---|
 | `@sealed/canonical-json` | JCS（RFC 8785 子集）规范化，供 manifest / license 签名前序列化 | `canonicalJson` |
-| `@sealed/pack-format` | `.sealedpack` v1 容器读写、条目密钥派生、AEAD、manifest 签名 | `writeContainer` / `readContainer` / `deriveEntryKey` / `sealEntry` / `openEntry` / `signManifest` / `verifyManifestSignature` |
+| `@sealed/pack-format` | `.sealedpack` v1 容器读写、条目密钥派生、AEAD、JCS manifest 签名 | `writeContainer` / `readContainer` / `encodeManifest` / `deriveEntryKey` / `sealEntry` / `openEntry` / `signManifest` / `verifyManifestSignature` |
 | `@sealed/license-format` | license v1 令牌编解码、Ed25519 验签、X25519 编解码、CK 封装/解封 | `signLicense` / `verifyLicense` / `wrapEntryKey` / `unwrapEntryKey` / `licenseStatus` |
-| `@sealed/seal-cli` | 作者侧工具：目录打包、包检查、本机签发试用 license | `packSkillDir` / `inspectPack` / `makeTrialLicense` |
+| `@sealed/seal-cli` | 作者侧工具（`seal` CLI）：keygen、目录打包、包检查、本机签发试用 license | `packSkillDir` / `inspectPack` / `makeTrialLicense` / `generateAuthorKey` / `saveAuthorKey` / `loadAuthorKey` |
 | `@sealed/dsh-sealed-skills` | 运行时：密钥库、`SealedCore`、`PackRegistry`、dsh 技能提供者适配与插件入口 | `FileKeystore` / `SealedCore` / `PackRegistry` / `createDshSkillProvider` / `apply` |
 
 加密只用 Node ≥ 20 内置 `crypto`（X25519 / HKDF-SHA256 / AES-256-GCM / Ed25519），M1 不引入任何第三方密码学库。
@@ -99,20 +99,22 @@ disk-leak-check: clean (no plaintext body in .sealed-home/ artifacts)
 corepack pnpm -r test
 ```
 
-五个包各自跑 vitest；M1 基线为 **84 个测试全绿**。
+五个包各自跑 vitest；M1 基线为 **123 个测试全绿**（`canonical-json` 5、`pack-format` 33、`license-format` 13、`seal-cli` 32、`dsh-sealed-skills` 40）。
 
 ## 打包与签发试用 license
 
-完整的作者流程（含预期输出）见 `docs/sealed-skills/guide/author-quickstart.md`。最小示例：
+完整的作者流程（含预期输出）见 `docs/sealed-skills/guide/author-quickstart.md`。最小示例（用 `seal-cli` 声明的 `seal` bin；也可写成 `node packages/seal-cli/dist/cli.js`）：
 
 ```bash
-node -e "import('./packages/seal-cli/dist/pack.js').then(async (m) => { const a = (await import('node:crypto')).generateKeyPairSync('ed25519'); const r = m.packSkillDir('./demo/translate', { packId: 'com.example.translate', version: '1.0.0', label: '翻译', master: Buffer.alloc(32, 1), trialEntryIds: ['meta','skill:translate:body'], authorPrivateKey: a.privateKey }); console.log(r.manifest.entries.map((e) => e.id)) })"
+seal keygen -o author.key.json
+seal pack ./demo/translate -o translate.sealedpack --pack-id com.example.translate \
+  --version 1.0.0 --label 翻译 --key author.key.json --trial meta,skill:translate:body
 ```
 
-预期输出：
+预期输出（`pack` 末行；`pack` 同时写出 `translate.sealedpack.master.json`，仅作者/服务端保留）：
 
 ```text
-[ 'meta', 'skill:translate:body' ]
+entries: meta, skill:translate:body
 ```
 
 条目 id 约定：`meta` / `skill:<name>:body` / `skill:<name>:res:<path>` / `script:<name>:path` / `data:<name>`。
@@ -149,7 +151,7 @@ node -e "import('./packages/seal-cli/dist/pack.js').then(async (m) => { const a 
 
 | 编号 | 属性 | M1 状态 |
 |---|---|---|
-| S1 | 磁盘上不出现技能正文/脚本明文（含错误输出、临时文件） | ✅ 冒烟脚本已自动断言 `.sealed-home/` 无正文明文 |
+| S1 | 磁盘产物中不出现技能正文/脚本明文 | ⚠️ 部分自动断言：`scripts/m1-smoke.mjs` 从 `demo/translate/SKILL.md` 现场解析出正文，断言它不出现在 `.sealed-home/` 的三个落盘产物（`.sealedpack` / `.license` / `device.json`）中；脚本条目、错误输出、临时文件与会话日志**尚未**纳入自动断言 |
 | S2 | 无有效 license 无法解密任何条目 | ✅ `SealedCore` 逐条目解封，缺 grant → `NOT_GRANTED` |
 | S3 | license 与设备绑定，换机不可用 | ✅ CK 用设备 X25519 公钥封装 |
 | S4 | 试用 license 解不开非试用条目 | ✅ license 只包含被授权条目的封装密钥 |

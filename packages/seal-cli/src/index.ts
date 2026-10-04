@@ -1,4 +1,7 @@
 export * from './frontmatter.js'
 export * from './paths.js'
 export * from './pack.js'
+export * from './author-key.js'
+export * from './master.js'
 export * from './trial.js'
+export * from './cli.js'

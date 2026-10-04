@@ -40,7 +40,7 @@ export interface SealedSkillsConfig {
 /** The only part of the dsh context surface this plugin depends on. */
 export interface SkillsContext {
   readonly skills: {
-    registerProvider(create: (control: DshSkillProviderControl) => DshSkillProvider): unknown
+    registerProvider(create: (control: DshSkillProviderControl) => DshSkillProvider): () => void
   }
 }
 
@@ -48,13 +48,15 @@ export const name = 'sealed-skills'
 export const inject = ['skills']
 
 /**
- * Register the sealed provider on `ctx.skills` during plugin apply.
+ * Register the sealed provider on `ctx.skills` during plugin apply and return the dsh
+ * effect disposer so the loader can order teardown.
  *
- * Cores are built lazily on first use and cached per pack path, so mounting a plugin
- * whose pack file is missing does not throw at load time — the provider simply reports
- * no candidates until the artifact appears (M1 keeps a single process-wide keystore).
+ * Cores are built lazily on first use and cached per pack path. A mount whose pack or license
+ * is missing, corrupt, or bound to another device is skipped (fail-closed per mount): neither
+ * core construction nor `list()` rejects, and the provider reports only the healthy packs.
+ * M1 keeps a single process-wide keystore.
  */
-export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): unknown {
+export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): () => void {
   const mounts = config.mounts ?? []
   const keystore = new FileKeystore({
     dir: config.keystoreDir ?? process.env.SEALED_HOME ?? join(process.cwd(), '.sealed-home'),
@@ -82,13 +84,26 @@ export function apply(ctx: SkillsContext, config: SealedSkillsConfig = {}): unkn
   const aggregate = {
     async list() {
       const summaries = []
-      for (const mount of mounts) summaries.push(...await coreFor(mount).list())
+      for (const mount of mounts) {
+        try {
+          summaries.push(...await coreFor(mount).list())
+        } catch {
+          // Fail closed for THIS mount only: a missing/corrupt pack, a bad license or an
+          // unavailable keystore must never take down list() for the healthy mounts.
+        }
+      }
       return summaries
     },
     async readSkill(skillName: string) {
       for (const mount of mounts) {
-        const core = coreFor(mount)
-        if ((await core.list()).some((skill) => skill.name === skillName)) return core.readSkill(skillName)
+        let core: SealedCore
+        try {
+          core = coreFor(mount)
+          if (!(await core.list()).some((skill) => skill.name === skillName)) continue
+        } catch {
+          continue
+        }
+        return core.readSkill(skillName)
       }
       throw new Error('no such sealed skill')
     },

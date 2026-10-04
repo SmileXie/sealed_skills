@@ -14,7 +14,16 @@ export interface SkillProviderLike {
 export function createSkillProvider(core: Pick<SealedCore, 'list' | 'readSkill'>): SkillProviderLike {
   return {
     name: 'sealed',
-    list: () => core.list(),
+    // Spec §7.3: the provider degrades instead of throwing. In M1 the skill NAMES live only in
+    // the encrypted `meta` entry, so an unauthorized/expired license cannot honestly surface any
+    // name — an empty list is the truthful degradation. (M2 can show the cleartext manifest label.)
+    async list() {
+      try {
+        return await core.list()
+      } catch {
+        return []
+      }
+    },
     async get(name: string) {
       try {
         return await core.readSkill(name)
@@ -31,9 +40,9 @@ export function createSkillProvider(core: Pick<SealedCore, 'list' | 'readSkill'>
 // from the npm tarball `@deepseek-ai/dsh-skill@0.0.1-rc.1` (fetched from registry.npmjs.org),
 // inside `package/lib/types/index.d.ts`:
 //
-//   L39-59   SkillSummary            { name, description, whenToUse?, invocation, source, provider, resourceBase? }
+//   L44-59   SkillSummary            { name, description, whenToUse?, invocation, source, provider, resourceBase? }
 //   L61-70   SkillCandidate          extends SkillSummary { rank, locator, path?, metadata? }
-//   L72-80   SkillDefinition         extends SkillSummary { content, path?, metadata? }
+//   L72-79   SkillDefinition         extends SkillSummary { content, path?, metadata? }
 //   L88-104  SkillLookupOptions      { cwd?, signal? } / SkillViewOptions { scope? }
 //   L154-159 SkillCatalogSnapshot    { skills, complete }
 //   L161-166 SkillProviderObservation{ candidates, complete }
@@ -121,7 +130,13 @@ export function createDshSkillProvider(core: Pick<SealedCore, 'list' | 'readSkil
     name: 'sealed',
     async list(options: DshSkillLookupOptions) {
       if (aborted(options)) return []
-      const summaries = await core.list()
+      let summaries: SkillSummary[]
+      try {
+        summaries = await core.list()
+      } catch {
+        // Same §7.3 degradation as `createSkillProvider`: never reject the dsh list() call.
+        return []
+      }
       return summaries.map((skill): DshSkillCandidate => ({
         name: skill.name,
         description: skill.description,

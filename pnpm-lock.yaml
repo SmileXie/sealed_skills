@@ -22,9 +22,6 @@ importers:
 
   packages/dsh-sealed-skills:
     dependencies:
-      '@sealed/canonical-json':
-        specifier: workspace:*
-        version: link:../canonical-json
       '@sealed/license-format':
         specifier: workspace:*
         version: link:../license-format
@@ -38,7 +35,11 @@ importers:
         specifier: workspace:*
         version: link:../canonical-json
 
-  packages/pack-format: {}
+  packages/pack-format:
+    dependencies:
+      '@sealed/canonical-json':
+        specifier: workspace:*
+        version: link:../canonical-json
 
   packages/seal-cli:
     dependencies:

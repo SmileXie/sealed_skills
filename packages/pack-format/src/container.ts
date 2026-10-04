@@ -1,4 +1,5 @@
 import { sign as edSign, verify as edVerify, type KeyObject } from 'node:crypto'
+import { canonicalJson } from '@sealed/canonical-json'
 import { NONCE_BYTES } from './aead.js'
 
 export const PACK_MAGIC = 'SLDSK1'
@@ -21,6 +22,17 @@ export class PackFormatError extends Error {
     super(message)
     this.name = 'PackFormatError'
   }
+}
+
+const KNOWN_ENTRY_TYPES: readonly PackEntryType[] = ['meta', 'text', 'script', 'data']
+
+/**
+ * RFC 8785 (JCS) serialization of the manifest. This is the single source of truth for the
+ * bytes that are stored in the container AND signed, so the signature always covers exactly
+ * what a reader sees on disk.
+ */
+export function encodeManifest(manifest: PackManifest): Buffer {
+  return Buffer.from(canonicalJson(manifest as unknown as Record<string, unknown>), 'utf8')
 }
 
 export function signManifest(manifestBytes: Buffer, privateKey: KeyObject): Buffer {
@@ -48,7 +60,7 @@ export function writeContainer(input: {
     if (chunk.nonce.length !== NONCE_BYTES) throw new PackFormatError('TABLE_MISMATCH', 'bad nonce length for ' + meta.id)
   }
 
-  const manifestBytes = Buffer.from(JSON.stringify(manifest), 'utf8')
+  const manifestBytes = encodeManifest(manifest)
   const header = Buffer.concat([
     Buffer.from(PACK_MAGIC, 'ascii'),
     Buffer.from([PACK_FORMAT_VERSION, 0]),
@@ -112,6 +124,24 @@ export function readContainer(buf: Buffer): {
   }
   if (manifest.entry_count !== count || manifest.entries.length !== count) {
     throw new PackFormatError('TABLE_MISMATCH', 'manifest entry_count disagrees with the chunk table')
+  }
+  for (const entry of manifest.entries) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new PackFormatError('BAD_MANIFEST', 'manifest entry has an unexpected shape')
+    }
+    const candidate = entry as unknown as Record<string, unknown>
+    if (typeof candidate.id !== 'string') {
+      throw new PackFormatError('BAD_MANIFEST', 'manifest entry id must be a string')
+    }
+    if (typeof candidate.type !== 'string' || !KNOWN_ENTRY_TYPES.includes(candidate.type as PackEntryType)) {
+      throw new PackFormatError('BAD_MANIFEST', 'manifest entry type is not recognised')
+    }
+    if (typeof candidate.size !== 'number' || !Number.isInteger(candidate.size) || candidate.size < 0) {
+      throw new PackFormatError('BAD_MANIFEST', 'manifest entry size must be a non-negative integer')
+    }
+    if (typeof candidate.trial !== 'boolean') {
+      throw new PackFormatError('BAD_MANIFEST', 'manifest entry trial flag must be a boolean')
+    }
   }
 
   const chunks: { id: string; offset: number; nonce: Buffer; ct: Buffer }[] = []

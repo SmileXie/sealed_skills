@@ -2,7 +2,7 @@ import type { KeyObject } from 'node:crypto'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import {
-  MAX_ENTRY_BYTES, deriveEntryKey, entryAad, readContainer, sealEntry, signManifest, verifyManifestSignature, writeContainer,
+  MAX_ENTRY_BYTES, deriveEntryKey, encodeManifest, entryAad, readContainer, sealEntry, signManifest, verifyManifestSignature, writeContainer,
   type PackEntryMeta, type PackManifest,
 } from '@sealed/pack-format'
 import { parseSkillMarkdown } from './frontmatter.js'
@@ -73,7 +73,7 @@ export function packSkillDir(dir: string, opts: {
     manifest.entries.push({ id: entry.id, type: entry.type, size: sealed.ct.length, trial: opts.trialEntryIds.includes(entry.id) })
     chunks.push({ id: entry.id, nonce: sealed.nonce, ct: sealed.ct })
   }
-  const signature = signManifest(Buffer.from(JSON.stringify(manifest), 'utf8'), opts.authorPrivateKey)
+  const signature = signManifest(encodeManifest(manifest), opts.authorPrivateKey)
   return { file: writeContainer({ manifest, chunks, signature }), manifest, master: opts.master }
 }
 

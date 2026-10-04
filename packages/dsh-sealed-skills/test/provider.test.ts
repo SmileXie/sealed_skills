@@ -33,6 +33,23 @@ describe('createSkillProvider', () => {
     const broken = createSkillProvider({ list: async () => [], readSkill: async () => { throw new Error('LICENSE_EXPIRED') } })
     expect(await broken.get('a')).toBeUndefined()
   })
+
+  it('degrades to an empty list when the license has expired, instead of rejecting', async () => {
+    const expired = createSkillProvider({
+      list: async () => { throw new Error('LICENSE_EXPIRED: license expired past its grace period') },
+      readSkill: async () => { throw new Error('LICENSE_EXPIRED: license expired past its grace period') },
+    })
+    await expect(expired.list()).resolves.toEqual([])
+    expect(await expired.get('a')).toBeUndefined()
+  })
+
+  it('degrades to an empty list when no license grant covers the meta entry', async () => {
+    const denied = createSkillProvider({
+      list: async () => { throw new Error('NOT_GRANTED: license grants no key for entry: meta') },
+      readSkill: async () => { throw new Error('NOT_GRANTED: license grants no key for entry: skill:a:body') },
+    })
+    await expect(denied.list()).resolves.toEqual([])
+  })
 })
 
 describe('createDshSkillProvider (dsh SkillProvider adapter)', () => {
@@ -64,6 +81,11 @@ describe('createDshSkillProvider (dsh SkillProvider adapter)', () => {
   it('returns no candidates once the caller signal is already aborted', async () => {
     const provider = createDshSkillProvider(core)
     expect(await provider.list({ signal: AbortSignal.abort() })).toEqual([])
+  })
+
+  it('degrades to no candidates when the core list() rejects', async () => {
+    const provider = createDshSkillProvider({ list: async () => { throw new Error('LICENSE_EXPIRED') }, readSkill: async () => { throw new Error('LICENSE_EXPIRED') } })
+    await expect(provider.list({})).resolves.toEqual([])
   })
 })
 

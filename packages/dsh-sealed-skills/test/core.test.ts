@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { deriveEntryKey, entryAad, sealEntry, signManifest, writeContainer, type PackEntryMeta, type PackManifest } from '@sealed/pack-format'
+import { deriveEntryKey, encodeManifest, entryAad, sealEntry, signManifest, writeContainer, type PackEntryMeta, type PackManifest } from '@sealed/pack-format'
 import { signLicense, wrapEntryKey, type LicensePayload } from '@sealed/license-format'
 import { SealedCore } from '../src/core.js'
 import { FileKeystore, x25519PublicFromRaw } from '../src/keystore.js'
@@ -26,7 +26,7 @@ function buildPack(entries: { id: string; type: PackEntryMeta['type']; body: str
     manifest.entries.push({ id: entry.id, type: entry.type, size: sealed.ct.length, trial: true })
     chunks.push({ id: entry.id, nonce: sealed.nonce, ct: sealed.ct })
   }
-  const signature = signManifest(Buffer.from(JSON.stringify(manifest)), author.privateKey)
+  const signature = signManifest(encodeManifest(manifest), author.privateKey)
   return writeContainer({ manifest, chunks, signature })
 }
 
@@ -58,6 +58,20 @@ function licenseFor(devicePub: Buffer, entryIds: string[], overrides: Partial<Li
     payload.keys.push(wrapEntryKey(payload, id, deriveEntryKey(master, packId, version, id), x25519PublicFromRaw(devicePub)))
   }
   return signLicense(payload, author.privateKey)
+}
+
+/**
+ * Observe zeroization without adding a decrypt seam: wraps Buffer.prototype.fill for the
+ * duration of a call and records the text contents of any buffer passed to fill(0).
+ */
+function captureZeroizedText(): { texts: string[]; restore: () => void } {
+  const texts: string[] = []
+  const realFill = Buffer.prototype.fill
+  Buffer.prototype.fill = function (this: Buffer, value?: unknown, ...rest: unknown[]): Buffer {
+    if (value === 0) texts.push(this.toString('utf8'))
+    return realFill.apply(this, [value, ...rest] as never) as Buffer
+  } as typeof Buffer.prototype.fill
+  return { texts, restore: () => { Buffer.prototype.fill = realFill } }
 }
 
 describe('SealedCore', () => {
@@ -194,5 +208,50 @@ describe('SealedCore', () => {
       license, trustedLicenseKeys: [author.publicKey], keystore: ks,
     })
     await expect(core.readSkill('translate')).rejects.toMatchObject({ code: 'LICENSE_INVALID' })
+  })
+
+  it('rejects a license bound to a foreign device key as LICENSE_INVALID', async () => {
+    const ks = await newKeystore()
+    const foreign = generateKeyPairSync('x25519')
+    const foreignPub = (foreign.publicKey.export({ format: 'jwk' }) as { x: string }).x
+    const core = new SealedCore({
+      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license: licenseFor(Buffer.from(foreignPub, 'base64url'), ['meta', 'skill:translate:body']),
+      trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    await expect(core.list()).rejects.toMatchObject({ code: 'LICENSE_INVALID' })
+    await expect(core.readSkill('translate')).rejects.toMatchObject({ code: 'LICENSE_INVALID' })
+  })
+
+  it('zeroizes the decrypted body buffer after readSkill', async () => {
+    const ks = await newKeystore()
+    const core = new SealedCore({
+      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body']),
+      trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    const observed = captureZeroizedText()
+    try {
+      await core.readSkill('translate')
+    } finally {
+      observed.restore()
+    }
+    expect(observed.texts).toContain('把用户输入翻译成英文。\n')
+  })
+
+  it('zeroizes the decrypted meta buffer after list()', async () => {
+    const ks = await newKeystore()
+    const core = new SealedCore({
+      pack, authorPublicKeyB64: ed25519RawX(author.publicKey),
+      license: licenseFor(await ks.loadDevicePublicKey()!, ['meta', 'skill:translate:body']),
+      trustedLicenseKeys: [author.publicKey], keystore: ks,
+    })
+    const observed = captureZeroizedText()
+    try {
+      await core.list()
+    } finally {
+      observed.restore()
+    }
+    expect(observed.texts).toContain(meta)
   })
 })

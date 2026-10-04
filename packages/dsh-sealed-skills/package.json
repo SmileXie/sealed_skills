@@ -6,7 +6,6 @@
   "types": "dist/index.d.ts",
   "scripts": { "build": "tsc -p tsconfig.json", "test": "vitest run" },
   "dependencies": {
-    "@sealed/canonical-json": "workspace:*",
     "@sealed/pack-format": "workspace:*",
     "@sealed/license-format": "workspace:*"
   }

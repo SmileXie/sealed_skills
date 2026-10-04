@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -38,5 +38,37 @@ describe('sealed-skills plugin', () => {
     const { ctx, provider } = fakeContext()
     apply(ctx, { mounts: [], trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir() })
     expect(await provider().list({})).toEqual([])
+  })
+
+  it('returns the dsh effect disposer from apply', () => {
+    const { ctx } = fakeContext()
+    const dispose = apply(ctx, { mounts: [], trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir() })
+    expect(typeof dispose).toBe('function')
+    expect(() => dispose()).not.toThrow()
+  })
+
+  it('skips a mount whose pack file is missing instead of rejecting list()', async () => {
+    const dir = freshKeystoreDir()
+    const { ctx, provider } = fakeContext()
+    apply(ctx, {
+      mounts: [{ packPath: join(dir, 'missing.sealedpack'), licensePath: join(dir, 'missing.license'), authorPublicKeyB64: 'x' }],
+      trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir(),
+    })
+    await expect(provider().list({})).resolves.toEqual([])
+  })
+
+  it('skips a corrupt mount instead of rejecting list()', async () => {
+    const dir = freshKeystoreDir()
+    const packPath = join(dir, 'corrupt.sealedpack')
+    const licensePath = join(dir, 'corrupt.license')
+    writeFileSync(packPath, 'not a sealed pack')
+    writeFileSync(licensePath, '{}')
+    const { ctx, provider } = fakeContext()
+    apply(ctx, {
+      mounts: [{ packPath, licensePath, authorPublicKeyB64: 'x' }],
+      trustedLicenseKeysB64: [], keystoreDir: freshKeystoreDir(),
+    })
+    await expect(provider().list({})).resolves.toEqual([])
+    await expect(provider().get({ name: 'x', locator: { sealedSkill: 'x' } } as never, {})).resolves.toBeUndefined()
   })
 })
