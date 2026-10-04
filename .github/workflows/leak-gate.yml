@@ -1,0 +1,30 @@
+name: leak-gate
+
+# Release-blocking canary leak gate (spec §10.3 / M3 Exit #7). It must pass WITHOUT the opt-in dsh
+# lab: the standalone gate drives the whole sealed-skills chain and sweeps every on-disk surface
+# (session log, zstd `session.jsonl.zstd`, spill, temp, logs, telemetry) for the canary, plus the
+# spec §8 error table, the crash-residue kill and the script source-echo refusal. The real-machine
+# sub-check is opt-in (`SEALED_DSH_LAB=1`) and loud-skips (UNVERIFIED) in CI.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  leak-gate:
+    name: canary leak gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile --config.strictDepBuilds=false
+      - name: Build
+        run: corepack pnpm -r build
+      - name: Leak gate
+        run: corepack pnpm leak-gate

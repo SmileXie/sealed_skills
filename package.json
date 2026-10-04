@@ -5,7 +5,8 @@
   "scripts": {
     "test": "corepack pnpm -r test",
     "build": "corepack pnpm -r build",
-    "smoke:m2": "node scripts/m2-smoke.mjs"
+    "smoke:m2": "node scripts/m2-smoke.mjs",
+    "leak-gate": "node scripts/leak-gate.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
