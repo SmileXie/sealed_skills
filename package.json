@@ -1,6 +1,7 @@
 {
   "name": "sealed-skills",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@12.9.1",
   "scripts": {
