@@ -2,10 +2,10 @@
 
 Sealed Skills 让AI Agent技能(Skills)作者把技能（正文 / 脚本 / 资源 / 数据）以**加密包** `.sealedpack` 的形式
 分发。技能内容在磁盘上始终是密文，只有在**设备绑定**的 license 有效期内、**且该条目被授权**时，
-才在运行时内存中解密，并以「没有磁盘路径的虚拟技能」交给
-[DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/)（dsh）使用。
+才在运行时内存中解密，并以「没有磁盘路径的虚拟技能」交给AI Agent（当前仅兼容
+[DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/)（dsh））使用。
 
-一句话威胁模型：**用户能使用技能，但磁盘上永远拿不到技能正文的明文。**
+一句话说明：**用户能使用技能，但磁盘上永远拿不到技能正文的明文。**
 
 ---
 
@@ -54,14 +54,14 @@ Sealed Skills 让AI Agent技能(Skills)作者把技能（正文 / 脚本 / 资�
 ### 总体架构与两条密钥链
 
 ```
-内容层：  master ──HKDF-SHA256──▶ CK_i ──AES-256-GCM──▶ entry 密文
-                                     ▲
-                                     │ 服务端用 设备公钥 封装
-                                     │ (X25519 ECDH + HKDF + AES-GCM key wrap)
+内容层：  pack master ──HKDF-SHA256──▶ CK_i ──AES-256-GCM──▶ entry 密文
+                                          ▲
+                                          │ 服务端用 设备公钥 封装
+                                          │ (X25519 ECDH + HKDF + AES-GCM key wrap)
 授权层：  服务端 Ed25519 私钥 ──签名──▶ license（含被封装的多把 CK_i）
 ```
 
-- **内容层**：每个 pack 版本一把 32 字节 `master`（仅作者 / 服务端持有）。条目 `i` 的内容密钥
+- **内容层**：每个 pack 版本一把 32 字节的 **pack master key**（pack 主密钥；代码与 CLI 中简称 `master`），仅作者 / 服务端持有。条目 `i` 的内容密钥
   `CK_i = HKDF-SHA256(master, salt = pack_id || version, info = "entry:" || entry_id)`。
   条目用 `CK_i` 做 AES-256-GCM 加密。**包只加密一次，所有客户共用同一份密文。**
 - **授权层**：每台设备用 X25519 设备密钥对；服务端用设备公钥把该设备被授权的 `CK_i` 逐条目
@@ -97,10 +97,10 @@ entry table + chunk area（每条目 12 字节 nonce + AES-GCM 密文）。明�
 
 ```
 首次激活 / 试用 ──▶ POST /v1/activate | /v1/trial
-                        │  逐条目封装 CK，Ed25519 签发 license（TTL 7 天 / 宽限 3 天）
+                             │  逐条目封装 CK，Ed25519 签发 license（TTL 7 天 / 宽限 3 天）
                         ▼
               $SEALED_HOME/licenses/<lid>.license.json（验签 + 设备绑定后落盘）
-                        │  剩余 < 2 天：POST /v1/renew（设备证明 DH-MAC，无需 token）
+                             │  剩余 < 2 天：POST /v1/renew（设备证明 DH-MAC，无需 token）
                         ▼
               SealedCore 解密 ──▶ dsh 虚拟技能
                         └ 断网：宽限期内继续可用；吊销：下次续期 403 ──▶ 删除缓存
@@ -418,3 +418,4 @@ sealed_skills/
 - **M5（可选）**：原生 / WASM `DecryptBackend`，让设备私钥与内容密钥不进入 JS 堆。
 - **上游缺口**：缺插件 harness 打开 sealed 会话会被整条拒绝，详见
   `docs/sealed-skills/notes/dsh-0.2-seams.md` §9.7。
+
