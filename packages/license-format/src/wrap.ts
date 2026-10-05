@@ -1,9 +1,18 @@
-import { createCipheriv, createDecipheriv, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, type KeyObject } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, type KeyObject } from 'node:crypto'
 import { b64u, unb64u } from './b64.js'
 import { LicenseError, rawPublicBytes, x25519PublicFromRaw } from './x25519.js'
 import type { LicenseGrant, LicensePayload } from './types.js'
 
 const SEP = Buffer.from([0x00])
+
+/**
+ * NON-PRODUCTION test seam. 用于 golden vectors：允许注入固定的临时私钥与 nonce，
+ * 使封装结果可复现。生产路径不传该参数，临时密钥与 nonce 仍由 CSPRNG 生成。
+ */
+export interface WrapEntryKeySeam {
+  ephemeralPrivateKey?: KeyObject
+  nonce?: Buffer
+}
 
 export function wrapAad(lid: string, eid: string): Buffer {
   return Buffer.concat([Buffer.from(lid, 'utf8'), SEP, Buffer.from(eid, 'utf8')])
@@ -19,11 +28,14 @@ export function wrapEntryKey(
   eid: string,
   contentKey: Buffer,
   devicePublicKey: KeyObject,
+  seam?: WrapEntryKeySeam,
 ): LicenseGrant {
-  const ephemeral = generateKeyPairSync('x25519')
+  const ephemeral = seam?.ephemeralPrivateKey
+    ? { privateKey: seam.ephemeralPrivateKey, publicKey: createPublicKey(seam.ephemeralPrivateKey) }
+    : generateKeyPairSync('x25519')
   const shared = diffieHellman({ privateKey: ephemeral.privateKey, publicKey: devicePublicKey })
   const key = kek(shared, payload.lid, eid)
-  const nonce = randomBytes(12)
+  const nonce = seam?.nonce ? Buffer.from(seam.nonce) : randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', key, nonce)
   cipher.setAAD(wrapAad(payload.lid, eid))
   const ct = Buffer.concat([cipher.update(contentKey), cipher.final(), cipher.getAuthTag()])

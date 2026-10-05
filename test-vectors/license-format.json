@@ -1,0 +1,53 @@
+{
+  "format": "sealed-skills/license-format",
+  "format_version": 1,
+  "note": "TEST-ONLY golden vectors. Fixed keys/nonces; DO NOT USE IN PRODUCTION.",
+  "signing_seed_hex": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+  "signing_public_b64u": "T9CZzNR9eJPf6ewkQU7LDZtUICMqrTDZHEZb4zy-ZcQ",
+  "device_private_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "device_public_b64u": "e06Qm75__kTEZaIgA31gjuNYl9Me-XLwf3SJLLD3PxM",
+  "ephemeral_private_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+  "lid": "lic_test_0001",
+  "eid": "skill:translate:body",
+  "content_key_hex": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+  "wrap_nonce_hex": "f0f1f2f3f4f5f6f7f8f9fafb",
+  "payload": {
+    "v": 1,
+    "lid": "lic_test_0001",
+    "sub": "trial:11111111",
+    "pack": {
+      "id": "com.example.translate",
+      "version": "1.0.0",
+      "author_pub": "T9CZzNR9eJPf6ewkQU7LDZtUICMqrTDZHEZb4zy-ZcQ"
+    },
+    "dev": "e06Qm75__kTEZaIgA31gjuNYl9Me-XLwf3SJLLD3PxM",
+    "iat": 1700000000,
+    "exp": 1700604800,
+    "grace_until": 1700864000,
+    "caps": [
+      "trial"
+    ],
+    "groups": [
+      "trial"
+    ],
+    "keys": [
+      {
+        "eid": "skill:translate:body",
+        "eph": "D6poTtKIZ7l_Smot7l34zpdOdrcBjj8iocTPJnhXDyA",
+        "n": "8PHy8_T19vf4-fr7",
+        "c": "YbTFmKw62YXa7b2lceuFsqkgE7qyrZwaeTHmZbj6qE_WFR7qHky_8B-6do1y7BO1"
+      }
+    ],
+    "seats": {
+      "plan": "trial",
+      "limit": 1
+    }
+  },
+  "expected_grant": {
+    "eid": "skill:translate:body",
+    "eph": "D6poTtKIZ7l_Smot7l34zpdOdrcBjj8iocTPJnhXDyA",
+    "n": "8PHy8_T19vf4-fr7",
+    "c": "YbTFmKw62YXa7b2lceuFsqkgE7qyrZwaeTHmZbj6qE_WFR7qHky_8B-6do1y7BO1"
+  },
+  "expected_token": "{\"payload\":\"eyJjYXBzIjpbInRyaWFsIl0sImRldiI6ImUwNlFtNzVfX2tURVphSWdBMzFnanVOWWw5TWUtWEx3ZjNTSkxMRDNQeE0iLCJleHAiOjE3MDA2MDQ4MDAsImdyYWNlX3VudGlsIjoxNzAwODY0MDAwLCJncm91cHMiOlsidHJpYWwiXSwiaWF0IjoxNzAwMDAwMDAwLCJrZXlzIjpbeyJjIjoiWWJURm1LdzYyWVhhN2IybGNldUZzcWtnRTdxeXJad2FlVEhtWmJqNnFFX1dGUjdxSGt5XzhCLTZkbzF5N0JPMSIsImVpZCI6InNraWxsOnRyYW5zbGF0ZTpib2R5IiwiZXBoIjoiRDZwb1R0S0laN2xfU21vdDdsMzR6cGRPZHJjQmpqOGlvY1RQSm5oWER5QSIsIm4iOiI4UEh5OF9UMTl2ZjQtZnI3In1dLCJsaWQiOiJsaWNfdGVzdF8wMDAxIiwicGFjayI6eyJhdXRob3JfcHViIjoiVDlDWnpOUjllSlBmNmV3a1FVN0xEWnRVSUNNcXJURFpIRVpiNHp5LVpjUSIsImlkIjoiY29tLmV4YW1wbGUudHJhbnNsYXRlIiwidmVyc2lvbiI6IjEuMC4wIn0sInNlYXRzIjp7ImxpbWl0IjoxLCJwbGFuIjoidHJpYWwifSwic3ViIjoidHJpYWw6MTExMTExMTEiLCJ2IjoxfQ\",\"sig\":\"CN9W987lwWCwT_3FNzc_0TDGJjkp-01NWrJ_jf5QQpuy1Vxg1kywNjskw1gF-G4cKiCvFH0pRCOo_s-ofpIHDg\"}"
+}
