@@ -46,7 +46,7 @@ Sealed Skills 的目标不是做 DRM，而是给技能作者一条**工程上可
 - 不保护“模型请求已发出”之后的明文——模型提供方会看到内容。
 - 不做实时踢下线：客户端按 24h 窗口惰性刷新，但只有进入续期窗口（到期前 2 天）才会联系服务器，因此吊销最坏要等一个 license TTL（7 天）后的下次续期才生效。
 - M2 的设备私钥仍以文件形式落盘（`$SEALED_HOME/device.json`）。OS 密钥库后端（DPAPI /
-  Keychain / libsecret）属于 Plan 2B，尚未实现。
+  Keychain / libsecret）属于 Plan 2B，尚未实现。保证边界的完整清单见 `guide/threat-model.md`。
 
 > **一句话定位**：面向“技术上有能力、但不会为破解付费”的用户（威胁模型 B）。它是
 > **商业护栏**，不是军用级防拷贝。把它当 DRM 用，你会失望；把它当“认真做付费技能的标准
@@ -139,7 +139,8 @@ seal pack  →  POST /v1/admin/packs  →  计费系统签发 purchase_token  �
 ⑦ 运营              续期自动进行；需要时后台吊销、释放席位、看审计
 ```
 
-每一环的可复制命令都在 `author-quickstart.md`（①③）与 `publish-and-license.md`（④⑤⑥⑦）。
+每一环的可复制命令都在 `author-quickstart.md`（①③）与 `publish-and-license.md`（④⑤⑥⑦）；
+商业模式、试用切分与市场落地的编排建议见 `guide/trial-and-marketplace.md`。
 
 ## 6. 授权与试用机制速查
 
@@ -162,6 +163,8 @@ seal pack  →  POST /v1/admin/packs  →  计费系统签发 purchase_token  �
 - **吊销**：服务端标记 + 释放席位；客户端在下一次 `renew` 时拿到 `403 REVOKED` 即删除缓存并停用技能（最坏延迟一个 license TTL）。
 
 ## 7. 安全与威胁模型（诚实版）
+
+> 完整版（含 M3 实测残余、上游缺口与 UNVERIFIED 清单）见 `guide/threat-model.md`。
 
 **信任边界**
 
@@ -194,6 +197,8 @@ seal pack  →  POST /v1/admin/packs  →  计费系统签发 purchase_token  �
 
 ## 8. 在运行时里接入
 
+> 要给一个**第三方 runtime** 写 loader，请从公开规范与 golden vectors 入手：`guide/build-your-own-loader.md`。
+
 Sealed Skills 复用用户**已有的** harness，只加一个 loader 插件。核心接口很小：
 
 | 接口 | 位置 | 作用 |
@@ -219,6 +224,9 @@ Sealed Skills 复用用户**已有的** harness，只加一个 loader 插件。�
 | **脚本执行沙箱** | M3：让 `scripts/` 条目在受限沙箱内运行且不落临时文件 |
 | **日志掩码** | M3：会话日志写入时把正文替换为占位符 |
 | **协议扩展** | 改 `packages/license-format/src/protocol.ts`——它是协议**单一真源** |
+| **实现第三方 loader** | 只依赖 `spec/pack-format.md` / `spec/license-format.md` 与 golden vectors，见 `guide/build-your-own-loader.md` |
+| **提交技能上架** | 用 `seal-cli` 打包，按 `guide/trial-and-marketplace.md` 设计试用与定价 |
+| **规范反馈** | 对线格式提 issue / PR；扩展一律走附加可选字段，不破坏 v1 |
 | **文档与示例** | 补 `docs/sealed-skills/`，所有示例都当冒烟测试跑 |
 
 开发约定：TypeScript ESM（`NodeNext`，`strict`），密码学只用 Node 内置 `crypto`，

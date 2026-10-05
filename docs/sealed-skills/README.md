@@ -1,4 +1,4 @@
-# Sealed Skills 生态文档（M1 + M2）
+# Sealed Skills 生态文档（M1 – M4）
 
 Sealed Skills 让技能作者以**加密包**的形式分发技能：正文、脚本、资源以密文落盘，只有在
 **设备绑定**的 license 有效期内、且该条目被授权时，才在运行时内存中解密，并以「无磁盘路径的
@@ -7,8 +7,10 @@ Sealed Skills 让技能作者以**加密包**的形式分发技能：正文、�
 一句话概括威胁模型：**用户能使用技能，但磁盘上永远拿不到技能正文的明文。**
 
 > 本文档描述当前仓库已实现的范围：**M1 加密核心与虚拟技能加载** + **M2 授权闭环**
-> （授权服务器、设备激活、续期、试用、吊销、离线宽限）。DPAPI / Keychain / libsecret 等
-> OS 密钥库后端属于 Plan 2B，尚未实现，详见文末路线图。
+> （授权服务器、设备激活、续期、试用、吊销、离线宽限）+ **M3 防泄漏**（日志掩码、运行时哨兵、
+> 沙箱脚本执行、金丝雀 gate）+ **M4 生态与交付**（公开线格式规范 + golden vectors + 面向作者 /
+> loader 作者 / 市场的文档 + 发布级 CI）。DPAPI / Keychain / libsecret 等 OS 密钥库后端属于
+> Plan 2B，尚未实现，详见文末路线图。
 
 ## M1 范围（当前可用的部分）
 
@@ -105,6 +107,22 @@ M3 把「明文只在内存」从 M1 的部分断言升级为**在真实 dsh `0.
 - OS 密钥库后端仍属 Plan 2B；设备私钥仍明文落盘于 `$SEALED_HOME/device.json`。
 - Windows 真实沙箱后端未启用；不可用分支已实现并测试（注入不可用沙箱）。
 - 无法在本机跑通需要模型凭据的完整 `dsh-base`+`dsh-headless` 模型回合（`DEEPSEEK_API_KEY`）——标为**未验证**。
+## M4 范围（生态与交付，已实现）
+
+M4 把「能用的框架」升级为「可被第三方采纳的生态」：
+
+- **公开线格式**：`spec/pack-format.md`（`.sealedpack` v1）与 `spec/license-format.md`（license v1），
+  第三方 loader 只依据规范 + `test-vectors/` 即可实现读取、验签、验 license、解封密钥。
+- **golden vectors**：`test-vectors/pack-format.json`、`test-vectors/license-format.json`（TEST-ONLY，
+  固定密钥/nonce，可脱离 dsh 复现）；生成脚本 `test-vectors/generate.mjs`。
+- **生态文档**：`guide/threat-model.md`（保证边界与 UNVERIFIED 清单）、
+  `guide/build-your-own-loader.md`（第三方 runtime 接入）、`guide/trial-and-marketplace.md`
+  （试用 / 席位 / 定价 / 分发 / 市场集成）。
+- **发布级 CI**：`.github/workflows/` 内的 `test` / `leak-gate` 门禁与 release dry-run（**不发布**）。
+
+**M4 明确不做**：原生 / WASM `DecryptBackend`、OS 密钥库后端、真实市场后端、多语言 SDK 实现
+（只提供规范 + 向量 + 指南使其可行）——分别属 M5 / Plan 2B。
+
 ## 六个包各自的职责
 
 | 包 | 职责 | 关键导出 |
@@ -256,14 +274,15 @@ entries: meta, skill:translate:body
 - **M3（已实现）防泄漏**：`log-mask` 消息投影 + `ctx.invariants` 运行时哨兵 + `tool-runtime` 沙箱脚本执行
   + 金丝雀泄漏扫描 CI gate（`pnpm leak-gate`）+ 真实 dsh 0.2.0-rc.2 集成与实验台。
   **上游缺口**：缺插件 harness 打开 sealed 会话会被整条拒绝（见 notes §9.7）；OS 密钥库仍属 Plan 2B。
-- **M4（尚未实现）生态与交付**：`docs/sealed-skills/` 完整七篇 + golden vectors + 发布流程与 CI。
+- **M4（已实现）生态与交付**：`spec/pack-format.md` / `spec/license-format.md` 公开线格式 +
+  `test-vectors/` golden vectors + `guide/threat-model.md` / `guide/build-your-own-loader.md` /
+  `guide/trial-and-marketplace.md` + 发布级 CI（test / leak-gate / release dry-run，不发布）。
 - **M5（尚未实现，可选）加固**：原生 / WASM `DecryptBackend`，让设备私钥与内容密钥不进入 JS 堆。
 
-当前文档交付物：本文件、`guide/author-quickstart.md`、`guide/publish-and-license.md`、
-`guide/for-skill-developers.md`、`spec/protocol.md`、`notes/dsh-skill-provider.md` 与
-`notes/dsh-0.2-seams.md`（M3 真机接缝权威，含 §9.7 上游缺口）。
-`spec/pack-format.md`、`spec/license-format.md`、`guide/trial-and-marketplace.md`、
-`guide/build-your-own-loader.md`、`guide/threat-model.md` 与 golden vectors 属 M4，尚未编写。
+当前文档交付物：本文件；`guide/` 下 `for-skill-developers` / `author-quickstart` /
+`publish-and-license` / `trial-and-marketplace` / `threat-model` / `build-your-own-loader`；
+`spec/` 下 `protocol` / `pack-format` / `license-format`；`notes/` 下 `dsh-skill-provider` /
+`dsh-0.2-seams`（M3 真机接缝权威，含 §9.7 上游缺口）；以及 `test-vectors/` 的 golden vectors。
 
 ## 仓库布局
 
@@ -280,21 +299,40 @@ sealed_skills/
 │  ├─ translate/SKILL.md       示例技能源码（明文，作者侧固有）
 │  ├─ translate/scripts/       示例脚本条目（script:translate:run.mjs）
 │  └─ cordis.yml               dsh 挂载示例（路径需替换，见上文）
+├─ test-vectors/
+│  ├─ generate.mjs             黄金向量生成脚本（TEST-ONLY）
+│  ├─ pack-format.json         `.sealedpack` v1 黄金向量
+│  └─ license-format.json      license v1 黄金向量
 ├─ scripts/
 │  ├─ m1-smoke.mjs             M1 端到端冒烟
 │  ├─ m2-smoke.mjs             M2 授权闭环端到端冒烟
 │  ├─ dsh-lab.mjs              真机 dsh 实验台（.dsh-lab/，SEALED_DSH_LAB=1 门控）
 │  └─ leak-gate.mjs            M3 金丝雀泄漏扫描 gate（pnpm leak-gate）
+├─ .github/workflows/          CI：test / leak-gate 门禁与 release dry-run（不发布）
 ├─ docs/sealed-skills/         生态文档（README / spec / guide / notes）
 └─ docs/superpowers/           设计与计划（含本任务的 plan / spec）
 ```
 
 ## 相关文档
 
+**写给技能作者**
+
 - `docs/sealed-skills/guide/for-skill-developers.md` —— 生态邀请：为什么、怎么赚钱、如何参与。
 - `docs/sealed-skills/guide/author-quickstart.md` —— 30 分钟从技能目录到密文包。
 - `docs/sealed-skills/guide/publish-and-license.md` —— 部署服务器、登记、签发、续期、席位、吊销。
+- `docs/sealed-skills/guide/trial-and-marketplace.md` —— 试用切分、席位、定价、分发与市场集成模式。
+
+**格式规范（第三方实现只需这些）**
+
+- `docs/sealed-skills/spec/pack-format.md` —— `.sealedpack` v1 线格式（容器 / 派生 / AEAD / 错误码）。
+- `docs/sealed-skills/spec/license-format.md` —— license v1 令牌（JCS / Ed25519 / X25519 封装 / 状态机）。
 - `docs/sealed-skills/spec/protocol.md` —— 授权服务器 HTTP 协议参考（端点 / 错误码 / 设备证明）。
+- `test-vectors/pack-format.json`、`test-vectors/license-format.json` —— TEST-ONLY 黄金向量。
+
+**安全与接入**
+
+- `docs/sealed-skills/guide/threat-model.md` —— 威胁模型、保证边界、M3 残余与 UNVERIFIED 清单。
+- `docs/sealed-skills/guide/build-your-own-loader.md` —— 第三方 runtime 实现 loader 的算法与检查清单。
 - `docs/sealed-skills/notes/dsh-skill-provider.md` —— 真实 dsh `SkillProvider` 契约、适配差异与未验证项。
 - `docs/sealed-skills/notes/dsh-0.2-seams.md` —— M3 真机接缝权威（tool/sandbox/invariants/session 契约，逐条 file:line；§9.7 上游缺口）。
 - `docs/superpowers/specs/2026-10-04-sealed-skills-design.md` —— 完整设计规范（格式、密码学、里程碑）。
