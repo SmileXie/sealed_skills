@@ -1,0 +1,28 @@
+name: release-dry-run
+
+# Release packaging dry-run (M4 Exit #4). It verifies every workspace package can be packed and
+# reports the tarball contents. It NEVER publishes: `npm pack --dry-run` builds the tarball locally
+# and does not contact a registry, so no token is required and nothing can be uploaded.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  pack:
+    name: pack (no publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile --config.strictDepBuilds=false
+      - name: Build
+        run: corepack pnpm -r build
+      - name: Pack every package (dry-run, no registry contact)
+        run: corepack pnpm -r exec npm pack --dry-run

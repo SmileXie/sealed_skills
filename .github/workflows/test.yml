@@ -1,0 +1,34 @@
+name: test
+
+# Full workspace test suite (spec §10). Release-blocking: build + `pnpm -r test` (275+ tests) plus
+# the two end-to-end smokes (M1 local pack → trial license → decrypt; M2 publish → activate →
+# renew → revoke). It runs WITHOUT the opt-in dsh lab: gated real-machine checks loud-skip and are
+# labelled UNVERIFIED (see docs/sealed-skills/guide/threat-model.md §6). The canary leak gate lives
+# in `leak-gate.yml`.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: build + test + smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install
+        run: corepack pnpm install --frozen-lockfile --config.strictDepBuilds=false
+      - name: Build
+        run: corepack pnpm -r build
+      - name: Test
+        run: corepack pnpm -r test
+      - name: M1 smoke
+        run: node scripts/m1-smoke.mjs
+      - name: M2 smoke
+        run: node scripts/m2-smoke.mjs
