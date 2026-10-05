@@ -1,21 +1,11 @@
 # Sealed Skills
 
-**加密分发、设备绑定授权的 dsh 技能包方案 —— 用户能用，磁盘上永远拿不到明文。**
-
-Sealed Skills 让技能作者把技能（正文 / 脚本 / 资源 / 数据）以**加密包** `.sealedpack` 的形式
+Sealed Skills 让AI Agent技能(Skills)作者把技能（正文 / 脚本 / 资源 / 数据）以**加密包** `.sealedpack` 的形式
 分发。技能内容在磁盘上始终是密文，只有在**设备绑定**的 license 有效期内、**且该条目被授权**时，
 才在运行时内存中解密，并以「没有磁盘路径的虚拟技能」交给
 [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/)（dsh）使用。
 
 一句话威胁模型：**用户能使用技能，但磁盘上永远拿不到技能正文的明文。**
-
-本 README 按三类读者组织：
-
-| 角色 | 你要做的事 | 章节 |
-|---|---|---|
-| **技能开发者** | 打包加密技能、架设授权服务器 |「角色一」|
-| **技能使用者** | 在 dsh 中安装插件、加载并使用加密技能 |「角色二」|
-| **贡献者 / 开发者** | 配置本仓库开发环境、构建与测试 |「角色三」|
 
 ---
 
@@ -240,7 +230,15 @@ node scripts/dsh-lab.mjs --dump-config   # 查看合成后的 profile 树
 
 **方式 B：接进你自己的 dsh profile**
 
-1. 让 profile 能解析到本包：`corepack pnpm add @sealed/dsh-sealed-skills`（或本地 link / junction）。
+1. 让 profile 能解析到本包。注意：**本包尚未发布到任何 registry**——`@sealed` 只是仓库内的
+   workspace scope，`release-dry-run.yml` 只做 `npm pack --dry-run`、从不发布，仓库内也没有 `.npmrc`
+   或 `publishConfig`；因此 `corepack pnpm add @sealed/dsh-sealed-skills` 在默认 npm 源上会 404。
+   请改用本地解析（二选一）：
+   - 在 profile 目录执行 `corepack pnpm add link:<仓库绝对路径>/packages/dsh-sealed-skills`；
+   - 或按 `scripts/dsh-lab.mjs` 的做法，把该包 junction 到 profile 的
+     `node_modules/@sealed/dsh-sealed-skills`。
+   （只有把它发布到自建私有 registry 或自有 npm scope 后，`corepack pnpm add
+   @sealed/dsh-sealed-skills` 才会命中。）
 2. 在 profile 的 `package.json` 里把它加进 bundle 列表：
 
    ```json
@@ -420,4 +418,3 @@ sealed_skills/
 - **M5（可选）**：原生 / WASM `DecryptBackend`，让设备私钥与内容密钥不进入 JS 堆。
 - **上游缺口**：缺插件 harness 打开 sealed 会话会被整条拒绝，详见
   `docs/sealed-skills/notes/dsh-0.2-seams.md` §9.7。
-
