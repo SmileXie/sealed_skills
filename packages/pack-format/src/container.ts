@@ -153,6 +153,7 @@ export function readContainer(buf: Buffer): {
     need(12)
     const offset = Number(buf.readBigUInt64BE(p)); p += 8
     const ctLen = buf.readUInt32BE(p); p += 4
+    if (manifest.entries[i].id !== id) throw new PackFormatError('TABLE_MISMATCH', 'chunk id mismatch at index ' + i)
     const declaredSize = manifest.entries[i].size
     if (declaredSize > MAX_ENTRY_BYTES) throw new PackFormatError('TOO_LARGE', 'entry ' + id + ' exceeds 32 MiB cap')
     if (declaredSize !== ctLen) throw new PackFormatError('TABLE_MISMATCH', 'chunk size mismatch at index ' + i)

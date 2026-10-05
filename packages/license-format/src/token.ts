@@ -38,14 +38,29 @@ export function parseLicense(text: string): { payload: LicensePayload; payloadB6
   }
   const p = parsed as LicensePayload
   const pack = (p as unknown as { pack?: unknown }).pack
+  const seats = (p as unknown as { seats?: unknown }).seats
+  // Spec license-format.md §4 step 1: a shape error anywhere below is LICENSE_MALFORMED, so a
+  // signed token with malformed grants/seats is rejected up front rather than failing later.
+  const isStringArray = (value: unknown): boolean =>
+    Array.isArray(value) && value.every((item) => typeof item === 'string')
+  const isGrant = (value: unknown): boolean => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+    const grant = value as Record<string, unknown>
+    return typeof grant.eid === 'string' && typeof grant.eph === 'string' &&
+      typeof grant.n === 'string' && typeof grant.c === 'string'
+  }
   const ok = p.v === 1 &&
     typeof p.lid === 'string' && typeof p.sub === 'string' && typeof p.dev === 'string' &&
     typeof p.iat === 'number' && typeof p.exp === 'number' && typeof p.grace_until === 'number' &&
-    Array.isArray(p.keys) && Array.isArray(p.caps) && Array.isArray(p.groups) &&
+    isStringArray(p.caps) && isStringArray(p.groups) &&
+    Array.isArray(p.keys) && p.keys.every(isGrant) &&
     typeof pack === 'object' && pack !== null &&
     typeof (pack as { id?: unknown }).id === 'string' &&
     typeof (pack as { version?: unknown }).version === 'string' &&
-    typeof (pack as { author_pub?: unknown }).author_pub === 'string'
+    typeof (pack as { author_pub?: unknown }).author_pub === 'string' &&
+    typeof seats === 'object' && seats !== null && !Array.isArray(seats) &&
+    typeof (seats as { plan?: unknown }).plan === 'string' &&
+    typeof (seats as { limit?: unknown }).limit === 'number'
   if (!ok) throw new LicenseError('LICENSE_MALFORMED', 'license payload has the wrong shape')
   return { payload: p, payloadB64: raw.payload, sig: raw.sig }
 }

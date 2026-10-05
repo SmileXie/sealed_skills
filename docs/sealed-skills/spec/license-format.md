@@ -97,7 +97,7 @@ CK   = AES-256-GCM-open(kek, grant.n, AAD = lid || 0x00 || eid, grant.c)
 
 ## 6. 状态机
 
-`licenseStatus(payload, now)`（`now` 为 Unix 秒）：
+`licenseStatus(payload, nowMs)`（`nowMs` 为 Unix **毫秒**；参考实现内部 `Math.floor(nowMs / 1000)` 换算为秒）：
 
 | 条件 | 状态 | 行为 |
 |---|---|---|

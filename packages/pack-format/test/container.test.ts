@@ -107,6 +107,16 @@ describe('container', () => {
     expect(() => readContainer(patched)).toThrowError(expect.objectContaining({ code: 'TABLE_MISMATCH' }))
   })
 
+  it('rejects a table id that disagrees with the signed manifest (spec §6 TABLE_MISMATCH)', () => {
+    const { file } = buildFixture()
+    const manifestLen = file.readUInt32BE(8)
+    const sigLen = file.readUInt32BE(12 + manifestLen)
+    const idStart = 12 + manifestLen + 4 + sigLen + 8
+    const patched = Buffer.from(file)
+    patched.write('zzzz', idStart, 'utf8')
+    expect(() => readContainer(patched)).toThrowError(expect.objectContaining({ code: 'TABLE_MISMATCH' }))
+  })
+
   it('stores the manifest as canonical RFC 8785 bytes', () => {
     const { manifest, file } = buildFixture()
     const parsed = readContainer(file)

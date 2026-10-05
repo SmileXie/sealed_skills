@@ -335,4 +335,5 @@ sealed_skills/
 - `docs/sealed-skills/guide/build-your-own-loader.md` —— 第三方 runtime 实现 loader 的算法与检查清单。
 - `docs/sealed-skills/notes/dsh-skill-provider.md` —— 真实 dsh `SkillProvider` 契约、适配差异与未验证项。
 - `docs/sealed-skills/notes/dsh-0.2-seams.md` —— M3 真机接缝权威（tool/sandbox/invariants/session 契约，逐条 file:line；§9.7 上游缺口）。
+- `docs/sealed-skills/notes/trial-license-author-pub-placeholder.md` —— （历史）M1 临时占位约定，已被 M2 取代，仅存档。
 - `docs/superpowers/specs/2026-10-04-sealed-skills-design.md` —— 完整设计规范（格式、密码学、里程碑）。

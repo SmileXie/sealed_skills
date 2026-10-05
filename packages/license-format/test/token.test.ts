@@ -62,4 +62,23 @@ describe('license token', () => {
     expect(err).toBeInstanceOf(LicenseError)
     expect((err as LicenseError).code).toBe('LICENSE_MALFORMED')
   })
+
+  it('rejects malformed grants/seats/caps/groups as LICENSE_MALFORMED (spec §4 step 1)', () => {
+    const cases: [string, Record<string, unknown>][] = [
+      ['keys not an array', { keys: 42 }],
+      ['grant element not an object', { keys: [42] }],
+      ['grant missing fields', { keys: [{ eid: 'meta' }] }],
+      ['seats null', { seats: null }],
+      ['seats missing plan', { seats: { limit: 1 } }],
+      ['caps with a non-string', { caps: ['trial', 7] }],
+      ['groups with a non-string', { groups: [{}] }],
+    ]
+    for (const [label, override] of cases) {
+      const bad = { ...sample(), ...override } as unknown as LicensePayload
+      let err: unknown
+      try { parseLicense(signLicense(bad, privateKey)) } catch (e) { err = e }
+      expect(err, label).toBeInstanceOf(LicenseError)
+      expect((err as LicenseError)?.code, label).toBe('LICENSE_MALFORMED')
+    }
+  })
 })
