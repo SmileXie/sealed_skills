@@ -70,13 +70,14 @@ Sealed Skills 让AI Agent技能(Skills)作者把技能（正文 / 脚本 / 资�
 因此：没有有效 license 就解不开任何条目；license 与设备绑定，换机不可用；试用 license 只封装
 `trial_entries` 的 `CK_i`，天然解不开非试用条目。
 
-### `.sealedpack` v1 容器
+### `.sealedpack`
 
-单个二进制容器，布局为：magic `SLDSK1` + 版本 + **JCS 规范化 manifest** + 作者 Ed25519 签名 +
-entry table + chunk area（每条目 12 字节 nonce + AES-GCM 密文）。明文 manifest 只含**不透明**的
-`id / 类型 / 密文长度 / 试用标记`，**不含**技能名、描述或正文哈希，避免泄露与内容确认攻击。
+单个自描述的**二进制文件**（英文 container 指“文件封装格式”，与 Docker 容器无关），布局为：
+magic `SLDSK1` + 版本 + **JCS 规范化 manifest** + 作者 Ed25519 签名 + entry table + chunk area
+（每条目 12 字节 nonce + AES-GCM 密文）。明文 manifest 只含**不透明**的 `id / 类型 / 密文长度 /
+试用标记`，**不含**技能名、描述或正文哈希，避免泄露与内容确认攻击。
 
-### license v1 令牌
+### license
 
 两字段 JSON 信封 `{ payload, sig }`：
 
@@ -104,6 +105,72 @@ entry table + chunk area（每条目 12 字节 nonce + AES-GCM 密文）。明�
                         ▼
               SealedCore 解密 ──▶ dsh 虚拟技能
                         └ 断网：宽限期内继续可用；吊销：下次续期 403 ──▶ 删除缓存
+```
+
+
+### 全流程时序图
+
+下图给出「打包加密 → 签发 license → 在 dsh 内安装插件 → 加载 / 解密 / 使用」的端到端时序。
+图中的两个角色是 **技能开发者** 与 **技能使用者**；`授权服务器` 不是角色，而是开发者架设并持有的
+系统，单独画出它是为了区分**联网步骤**（激活 / 续期 / 吊销）与**纯本地步骤**（验签 / 设备绑定 /
+解密）——后者完全不与服务器通信。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as 技能开发者
+    actor User as 技能使用者
+    participant Server as 授权服务器（开发者）
+
+    Note over Dev,Server: 开发者持有 Ed25519 作者私钥；服务器持有 pack master 与 license 签名私钥
+
+    rect rgb(238,246,255)
+    Note over Dev,User: ① 打包加密 skill（一次加密，全客户共用同一份密文）
+    Dev->>Dev: seal keygen -o author.key.json
+    Dev->>Dev: seal pack ./demo/translate -o translate.sealedpack
+    Note over Dev: HKDF-SHA256 逐条目派生 CK_i，AES-256-GCM 加密
+    Dev->>Dev: 产出 translate.sealedpack + translate.sealedpack.master.json
+    end
+
+    rect rgb(240,252,240)
+    Note over Dev,User: ② 架设授权服务器并登记 pack
+    Dev->>Server: 部署服务器（admin bearer 鉴权，master 静态加密存储）
+    Dev->>Server: POST /v1/admin/packs 登记 pack 的 master（绝不上传密文包）
+    Server-->>Dev: 已登记 pack / 版本 / 试用条目
+    Dev->>Server: 写入 purchase_token（含席位 seats）
+    end
+
+    Dev-->>User: 交付 translate.sealedpack + purchase_token<br/>（绝不交付 master.json / author.key.json）
+
+    rect rgb(255,250,235)
+    Note over Dev,User: ③ 在 dsh 环境安装插件并首次激活（联网）
+    User->>User: profile 的 dsh.profile.bundles 加入 @sealed/dsh-sealed-skills
+    User->>User: cordis.patch.yml 配置 keystoreDir / mounts / serverUrl / trustedLicenseKeysB64
+    User->>User: FileKeystore 生成本机 X25519 设备密钥（device.json）
+    User->>Server: POST /v1/activate（device_pub + purchase_token）或 /v1/trial
+    Note over Server: 校验 token / 席位 / 试用去重；<br/>用 device_pub 逐条目封装 CK_i，Ed25519 签发 license
+    Server-->>User: license（dev 绑定，TTL 7 天 / 宽限 3 天）
+    User->>User: 落盘 $SEALED_HOME/licenses/{lid}.license.json
+    end
+
+    rect rgb(255,240,245)
+    Note over Dev,User: ④ 加载 / 解密 / 使用（纯本地，不与服务器通信）
+    User->>User: 用 trustedLicenseKeysB64 本地验签 license（无需服务器）
+    User->>User: 本地比对 license.dev 与本机设备公钥（不匹配则 LICENSE_INVALID）
+    User->>User: list 只解密 meta 条目
+    User->>User: get('translate') 用解封的 CK_i 内存解密正文（未授权条目 NOT_GRANTED）
+    User->>User: 以无 path 虚拟技能交给 ctx.skills
+    User->>User: 包内脚本在只读沙箱执行，明文不落盘
+    end
+
+    rect rgb(246,246,252)
+    Note over Dev,User: ⑤ 续期与吊销（唯一的后续联网点）
+    User->>Server: 剩余不足 2 天：POST /v1/renew（device_pub + DH-MAC，无需 token）
+    Server-->>User: 新 license
+    Note over Dev,Server: 管理员吊销：POST /v1/revoke（按 lid / 设备 / 席位）
+    User->>Server: 之后再次 POST /v1/renew
+    Server-->>User: 403（已吊销）→ 删除本地 license 缓存
+    end
 ```
 
 ---
@@ -418,4 +485,6 @@ sealed_skills/
 - **M5（可选）**：原生 / WASM `DecryptBackend`，让设备私钥与内容密钥不进入 JS 堆。
 - **上游缺口**：缺插件 harness 打开 sealed 会话会被整条拒绝，详见
   `docs/sealed-skills/notes/dsh-0.2-seams.md` §9.7。
+
+
 
